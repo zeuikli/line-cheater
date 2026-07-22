@@ -144,39 +144,36 @@ python3 cli/line_migrator.py verify-index \
           </section>
         </div>
 
-        <section class="panel attachment-panel">
-          <div class="panel-heading compact">
-            <div>
-              <p class="section-kicker">4 / 附件檔案</p>
-              <h2>附件索引</h2>
-              <p class="muted">依訊息 metadata 建立附件關聯；無法完全確認時，會標示為可能附件供你核對。</p>
-            </div>
-            <button id="exportAttachmentsButton" class="button button-secondary" type="button" disabled>匯出附件清單</button>
-          </div>
-          <div id="attachmentPreview" class="attachment-preview"></div>
-        </section>
-
         <section class="panel cleanup-panel">
           <div class="panel-heading compact">
             <div>
-              <p class="section-kicker">5 / 附件瘦身</p>
-              <h2>標記不需要的附件</h2>
-              <p class="muted">先依 SQLite 關聯選擇個人、群組、社群或孤兒檔案，再查看預覽、脈絡與時間，最後才勾選要移除的檔案；原始備份不會被刪除或修改。</p>
-            </div>
-            <div class="button-row cleanup-actions">
-              <button id="markFilteredAttachmentsButton" class="button button-quiet" type="button" disabled>標記目前搜尋結果</button>
-              <button id="keepAllAttachmentsButton" class="button button-quiet" type="button" disabled>全部保留</button>
-              <button id="clearAttachmentSelectionButton" class="button button-quiet" type="button" disabled>清除勾選</button>
+              <p class="section-kicker">4 / 附件瘦身</p>
+              <h2>依聊天室逐一審核附件</h2>
+              <p class="muted">先選取聊天室或特殊分類，再查看附件內容並勾選要刪除的原始附件或縮圖。這裡只建立計畫，不會修改備份。</p>
             </div>
           </div>
+          <ol class="cleanup-guide" aria-label="附件審核步驟">
+            <li><span>1</span><strong>選取聊天室</strong><small>先從列表選擇單人、群組、社群或鬼檔案分類</small></li>
+            <li><span>2</span><strong>看預覽與脈絡</strong><small>用縮圖、傳送者、時間與訊息摘要辨識內容</small></li>
+            <li><span>3</span><strong>勾選要刪除的檔案</strong><small>原始附件與縮圖可以分開決定</small></li>
+          </ol>
           <div class="cleanup-warning">
             <strong>還原前請保留原始檔</strong>
-            <span>此頁面目前輸出的是人工操作計畫，不是已驗證可直接還原的 iMazing 封裝。請先複製原始 <code>.imazingapp</code>，再依計畫在 ZIP 編輯工具中處理。</span>
+            <span>「鬼檔案」表示附件未被路徑所屬聊天室的目前 <code>Line.sqlite</code> 訊息引用，仍需人工確認。此頁面輸出的是操作計畫，不是已驗證可直接還原的 iMazing 封裝。</span>
           </div>
           <div class="cleanup-toolbar">
             <label class="search-box cleanup-search">
               <span class="sr-only">搜尋附件</span>
-              <input id="attachmentSearch" type="search" placeholder="搜尋附件路徑或檔名">
+              <input id="attachmentSearch" type="search" placeholder="搜尋聊天室、傳送者、訊息內容或檔名">
+            </label>
+            <label class="cleanup-filter">
+              <span>顯示</span>
+              <select id="attachmentKindFilter">
+                <option value="all">全部檔案</option>
+                <option value="original">只看原始附件</option>
+                <option value="thumbnail">只看縮圖</option>
+                <option value="marked">只看已標記刪除</option>
+              </select>
             </label>
             <label class="cleanup-select">
               <span>顯示</span>
@@ -185,7 +182,8 @@ python3 cli/line_migrator.py verify-index \
                 <option value="individual">個人聊天室</option>
                 <option value="group">群組聊天室</option>
                 <option value="community">社群</option>
-                <option value="orphan">孤兒檔案</option>
+                <option value="unreferenced">SQLite 未引用</option>
+                <option value="unconfirmed">無法確認</option>
               </select>
             </label>
             <label class="cleanup-select">
@@ -203,7 +201,8 @@ python3 cli/line_migrator.py verify-index \
             </div>
           </div>
           <div id="attachmentCategorySummary" class="attachment-category-summary" aria-label="附件分類摘要"></div>
-          <div id="attachmentCleanupList" class="attachment-cleanup-list"></div>
+          <p id="cleanupResultInfo" class="cleanup-result-info" aria-live="polite"></p>
+          <div id="attachmentCleanupList" class="attachment-cleanup-list" aria-label="依聊天室分類的附件"></div>
           <nav class="chat-pagination attachment-pagination" aria-label="附件瘦身清單分頁">
             <button id="attachmentPrevButton" class="button button-secondary" type="button">上一頁</button>
             <span id="attachmentPageInfo" class="page-info">第 1 頁</span>
@@ -212,9 +211,9 @@ python3 cli/line_migrator.py verify-index \
           <div class="button-row cleanup-export-row">
             <button id="exportCleanupPlanButton" class="button button-primary" type="button" disabled>匯出瘦身操作計畫</button>
             <button id="exportCleanupTextButton" class="button button-secondary" type="button" disabled>匯出操作說明</button>
-            <button id="buildImazingCandidateButton" class="button button-secondary" type="button" disabled>建立 .imazingapp 候選封裝</button>
+            <button id="buildImazingCandidateButton" class="button button-secondary" type="button" disabled>建立瘦身 .imazingapp</button>
           </div>
-          <p id="cleanupPackageStatus" class="helper-text" role="status">候選封裝會保留未標記的 Container／Payload 檔案，但尚未經 iMazing 實機驗證。</p>
+          <p id="cleanupPackageStatus" class="helper-text" role="status">瘦身 .imazingapp 會保留未標記的 Container／Payload 檔案，尚未經 iMazing 實機驗證。</p>
           <div class="duplicate-tools">
             <div class="insight-card-heading"><h3>附件重複掃描</h3><button id="scanAttachmentDuplicatesButton" class="button button-secondary" type="button" disabled>掃描 exact duplicate</button></div>
             <p id="duplicateStatus" class="helper-text">只會對相同大小的候選檔案計算 SHA-256；不會自動刪除。</p>
@@ -288,8 +287,6 @@ python3 cli/line_migrator.py verify-index \
 
     <!-- sql.js is used only for local, read-only SQLite parsing. -->
     <script src="https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.js"></script>
-    <!-- fflate provides streaming ZIP output for the local candidate package. -->
-    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
