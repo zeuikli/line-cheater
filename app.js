@@ -14,6 +14,8 @@
   var ZIP_CLASSIC_MAX_U16 = 0xfffe;
   var ZIP_CLASSIC_MAX_U32 = 0xfffffffe;
   var ZIP_CRC_TABLE = createZipCrcTable();
+  var GITHUB_RELEASES_URL = "https://github.com/zeuikli/line-cheater/releases";
+  var GITHUB_RELEASES_API_URL = "https://api.github.com/repos/zeuikli/line-cheater/releases?per_page=20";
   var chatResizeTimer = null;
   var packageInProgress = false;
   var imageModalTrigger = null;
@@ -76,6 +78,15 @@
   var el = {};
 
   document.addEventListener("DOMContentLoaded", function () {
+    el.productLanding = document.getElementById("productLanding");
+    el.openWebApp = document.getElementById("openWebApp");
+    el.returnToLanding = document.getElementById("returnToLanding");
+    el.macDownload = document.getElementById("macDownload");
+    el.macDownloadMeta = document.getElementById("macDownloadMeta");
+    el.windowsDownload = document.getElementById("windowsDownload");
+    el.windowsDownloadMeta = document.getElementById("windowsDownloadMeta");
+    el.releaseStatus = document.getElementById("releaseStatus");
+    el.appFooter = document.getElementById("appFooter");
     el.folderInput = document.getElementById("folderInput");
     el.databaseInput = document.getElementById("databaseInput");
     el.indexInput = document.getElementById("indexInput");
@@ -166,6 +177,12 @@
     el.imageModalCaption = document.getElementById("imageModalCaption");
     el.imageModalClose = document.getElementById("imageModalClose");
 
+    el.openWebApp.addEventListener("click", function () {
+      showWebApp(true);
+    });
+    el.returnToLanding.addEventListener("click", function () {
+      showProductLanding(true);
+    });
     el.folderInput.addEventListener("change", function (event) {
       loadSource(event.target.files, "folder");
     });
@@ -325,13 +342,132 @@
       if (event.key === "Escape") closeImageModal();
     });
     window.addEventListener("resize", scheduleChatLayoutRefresh);
+    window.addEventListener("hashchange", function () {
+      if (window.location.hash === "#web-app") showWebApp(false);
+      else showProductLanding(false);
+    });
     updateSourceModeUi();
+    loadDesktopReleaseLinks();
+    if (window.location.hash === "#web-app") showWebApp(false);
 
     if (typeof window.initSqlJs !== "function") {
       setRuntime("SQL.js 載入失敗", true);
       setStatus("無法載入資料解析引擎。請確認網路連線正常，或重新整理頁面再試。", true);
     }
   });
+
+  function showWebApp(updateHistory) {
+    if (!el.productLanding || !el.appShell) return;
+    el.productLanding.classList.add("hidden");
+    el.appShell.classList.remove("hidden");
+    if (el.appFooter) el.appFooter.classList.remove("hidden");
+    document.body.classList.add("web-app-active");
+    if (updateHistory && window.location.hash !== "#web-app") {
+      window.history.pushState(null, "", "#web-app");
+    }
+    window.requestAnimationFrame(function () {
+      var title = document.getElementById("webAppTitle");
+      if (title) title.focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    });
+  }
+
+  function showProductLanding(updateHistory) {
+    if (!el.productLanding || !el.appShell) return;
+    el.productLanding.classList.remove("hidden");
+    el.appShell.classList.add("hidden");
+    if (el.appFooter) el.appFooter.classList.add("hidden");
+    document.body.classList.remove("web-app-active");
+    if (updateHistory && window.location.hash) {
+      window.history.pushState(null, "", window.location.pathname + window.location.search);
+    }
+    window.requestAnimationFrame(function () {
+      var title = document.getElementById("productTitle");
+      if (title) title.focus({ preventScroll: true });
+      window.scrollTo(0, 0);
+    });
+  }
+
+  function loadDesktopReleaseLinks() {
+    setDesktopReleaseFallback(false);
+    if (typeof window.fetch !== "function") {
+      setDesktopReleaseFallback(true);
+      return;
+    }
+    window.fetch(GITHUB_RELEASES_API_URL, {
+      cache: "no-store",
+      headers: { Accept: "application/vnd.github+json" }
+    }).then(function (response) {
+      if (!response.ok) throw new Error("GitHub 回應失敗：" + response.status);
+      return response.json();
+    }).then(function (releases) {
+      var published = Array.isArray(releases) ? releases.filter(function (release) {
+        return release && !release.draft && !release.prerelease;
+      }) : [];
+      var macAsset = findDesktopReleaseAsset(published, /macOS-arm64\.dmg$/i);
+      var windowsAsset = findDesktopReleaseAsset(published, /Windows-x64\.zip$/i);
+      configurePlatformDownload(el.macDownload, el.macDownloadMeta, macAsset, "macOS 12+ · Apple Silicon");
+      configurePlatformDownload(el.windowsDownload, el.windowsDownloadMeta, windowsAsset, "Windows 10/11 · x64");
+      if (el.releaseStatus) {
+        el.releaseStatus.textContent = macAsset && windowsAsset
+          ? "下載連結由 GitHub 最新正式 Release 提供。"
+          : "部分平台尚未找到對應資產，可前往 GitHub Releases 查看所有版本。";
+      }
+      highlightCurrentPlatform();
+    }).catch(function () {
+      setDesktopReleaseFallback(true);
+    });
+  }
+
+  function findDesktopReleaseAsset(releases, filenamePattern) {
+    for (var releaseIndex = 0; releaseIndex < releases.length; releaseIndex += 1) {
+      var release = releases[releaseIndex];
+      var assets = Array.isArray(release.assets) ? release.assets : [];
+      for (var assetIndex = 0; assetIndex < assets.length; assetIndex += 1) {
+        var asset = assets[assetIndex];
+        if (asset && filenamePattern.test(String(asset.name || "")) && asset.browser_download_url) {
+          return { url: asset.browser_download_url, version: release.tag_name || release.name || "最新版本" };
+        }
+      }
+    }
+    return null;
+  }
+
+  function configurePlatformDownload(link, meta, asset, platformLabel) {
+    if (!link || !meta) return;
+    link.href = asset ? asset.url : GITHUB_RELEASES_URL;
+    link.classList.toggle("is-unavailable", !asset);
+    link.removeAttribute("aria-disabled");
+    if (asset) {
+      meta.textContent = asset.version + " · " + platformLabel;
+      link.removeAttribute("title");
+    } else {
+      meta.textContent = "尚未提供，前往 Releases 查看";
+      link.title = "尚未找到此平台的正式 Release，將開啟 GitHub Releases。";
+    }
+  }
+
+  function setDesktopReleaseFallback(hasError) {
+    configurePlatformDownload(el.macDownload, el.macDownloadMeta, null, "");
+    configurePlatformDownload(el.windowsDownload, el.windowsDownloadMeta, null, "");
+    if (el.releaseStatus) {
+      el.releaseStatus.textContent = hasError
+        ? "目前無法取得最新版本，請從 GitHub Releases 選擇下載檔。"
+        : "正在讀取最新桌面版資訊。";
+    }
+    highlightCurrentPlatform();
+  }
+
+  function highlightCurrentPlatform() {
+    var userAgent = String(navigator.userAgent || "");
+    var preferred = /Windows/i.test(userAgent) ? el.windowsDownload : (/Macintosh|Mac OS X/i.test(userAgent) ? el.macDownload : null);
+    [el.macDownload, el.windowsDownload].forEach(function (link) {
+      if (!link) return;
+      link.classList.toggle("is-platform-match", link === preferred);
+      if (link === preferred) link.setAttribute("aria-current", "true");
+      else link.removeAttribute("aria-current");
+    });
+  }
 
   function setRuntime(text, isError) {
     el.runtimeBadge.textContent = text;

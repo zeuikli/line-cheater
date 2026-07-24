@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="在瀏覽器本機閱讀、搜尋與匯出 iOS LINE 聊天備份">
+    <meta name="description" content="在你的裝置本機閱讀、搜尋、匯出與整理 iOS LINE 聊天備份，提供桌面版與網頁版。">
     <title>LINE Cheater</title>
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://zeuikli.github.io/line-cheater/">
@@ -21,10 +21,117 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main class="app-shell">
+    <section id="productLanding" class="product-landing" aria-labelledby="productTitle">
+      <header class="landing-nav">
+        <a class="landing-brand" href="/" aria-label="LINE Cheater 首頁">
+          <img src="native/electron/assets/icon.png" alt="" aria-hidden="true">
+          <span>LINE Cheater</span>
+        </a>
+        <a class="landing-github-link" href="https://github.com/zeuikli/line-cheater" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </header>
+
+      <div class="landing-hero">
+        <div class="landing-intro">
+          <p class="landing-eyebrow">本機解析 · 支援 GitHub Pages</p>
+          <h1 id="productTitle" tabindex="-1">LINE Cheater</h1>
+          <p class="landing-tagline">你的 LINE 清得乾乾淨淨</p>
+          <p class="landing-copy">讀取、搜尋與整理 iOS LINE 備份。選擇適合你的使用方式，所有來源檔案都在你的裝置本機處理。</p>
+          <ul class="landing-proof" aria-label="產品特性">
+            <li>備份不會上傳</li>
+            <li>原始檔唯讀保留</li>
+            <li>支援 iMazing 備份</li>
+          </ul>
+        </div>
+
+        <div class="edition-picker" aria-label="選擇使用版本">
+          <article class="edition-card edition-card-desktop">
+            <div class="edition-card-heading">
+              <span class="edition-icon edition-icon-desktop" aria-hidden="true">
+                <span></span><span></span><span></span>
+              </span>
+              <div>
+                <p class="edition-label">建議使用</p>
+                <h2>桌面版</h2>
+              </div>
+              <span class="edition-recommended">適合大型備份</span>
+            </div>
+            <p>以原生核心讀取 <code>.imazingapp</code> 與備份資料夾，適合大量附件、進階清理與長時間工作。</p>
+            <div class="desktop-highlights" aria-label="桌面版特性">
+              <span>原生檔案讀取</span>
+              <span>有界記憶體處理</span>
+              <span>進階清理</span>
+            </div>
+            <div class="download-options">
+              <a id="macDownload" class="platform-download" href="https://github.com/zeuikli/line-cheater/releases" target="_blank" rel="noopener noreferrer">
+                <span class="platform-download-icon platform-download-icon-mac" aria-hidden="true">⌘</span>
+                <span><strong>下載 macOS 版</strong><small id="macDownloadMeta">正在檢查最新版本</small></span>
+              </a>
+              <a id="windowsDownload" class="platform-download" href="https://github.com/zeuikli/line-cheater/releases" target="_blank" rel="noopener noreferrer">
+                <span class="platform-download-icon platform-download-icon-windows" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                <span><strong>下載 Windows 版</strong><small id="windowsDownloadMeta">正在檢查最新版本</small></span>
+              </a>
+            </div>
+            <p id="releaseStatus" class="release-status" role="status" aria-live="polite">正在讀取最新桌面版資訊。</p>
+          </article>
+
+          <article class="edition-card edition-card-web">
+            <div class="edition-card-heading">
+              <span class="edition-icon edition-icon-web" aria-hidden="true">&lt;/&gt;</span>
+              <div>
+                <p class="edition-label">免安裝</p>
+                <h2>網頁版</h2>
+              </div>
+            </div>
+            <p>快速開啟備份、瀏覽聊天室與匯出資料。適合一般大小的 SQLite 與即時查看需求。</p>
+            <ul class="web-edition-details">
+              <li>直接在瀏覽器執行</li>
+              <li>不建立帳號或上傳資料</li>
+              <li>支援完整備份、SQLite 與索引</li>
+            </ul>
+            <button id="openWebApp" class="open-web-app" type="button">
+              繼續使用網頁版
+              <span aria-hidden="true">↓</span>
+            </button>
+          </article>
+        </div>
+      </div>
+
+      <div class="landing-assurance">
+        <div>
+          <strong>資料不離開你的裝置</strong>
+          <span>解析與整理均在本機執行</span>
+        </div>
+        <div>
+          <strong>保留原始備份</strong>
+          <span>所有候選輸出都會另存</span>
+        </div>
+        <div>
+          <strong>自由選擇工具</strong>
+          <span>桌面版與網頁版各有適用情境</span>
+        </div>
+      </div>
+
+      <footer class="landing-footer">
+        <span>LINE Cheater · 僅在本機處理</span>
+        <span>
+          Powered by <a href="https://github.com/zeuikli" target="_blank" rel="noopener noreferrer">zeuikli</a>
+          &amp; <a href="https://github.com/hirakujira" target="_blank" rel="noopener noreferrer">hirakujira</a>
+          · <a href="https://github.com/zeuikli/line-cheater" target="_blank" rel="noopener noreferrer">GitHub repo</a>
+        </span>
+      </footer>
+    </section>
+
+    <main id="webApp" class="app-shell hidden" aria-labelledby="webAppTitle">
+      <div class="web-app-nav">
+        <button id="returnToLanding" class="return-to-landing" type="button">
+          <span aria-hidden="true">←</span>
+          選擇使用版本
+        </button>
+        <span>網頁版，所有資料僅在此瀏覽器分頁處理</span>
+      </div>
       <header class="hero">
         <p class="eyebrow">本機解析 · 支援 GitHub Pages</p>
-        <h1>LINE Cheater</h1>
+        <h1 id="webAppTitle" tabindex="-1">LINE Cheater</h1>
         <p class="hero-tagline">你的 LINE 清得乾乾淨淨</p>
         <p class="hero-copy">
           在瀏覽器中讀取 iOS LINE App Container 備份，搜尋聊天室、閱讀訊息並整理附件。
@@ -355,7 +462,7 @@ python3 cli/line_migrator.py verify-index \
       </section>
     </div>
 
-    <footer class="app-footer">
+    <footer id="appFooter" class="app-footer hidden">
       <span>LINE Cheater · 僅在本機處理</span>
       <span class="app-footer-credits">
         Powered by <a href="https://github.com/zeuikli" target="_blank" rel="noopener noreferrer">zeuikli</a>
