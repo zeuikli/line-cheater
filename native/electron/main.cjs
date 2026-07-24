@@ -239,6 +239,7 @@ function createWindow() {
     minWidth: 840,
     minHeight: 620,
     show: false,
+    icon: path.join(__dirname, "assets", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

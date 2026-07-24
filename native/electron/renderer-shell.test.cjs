@@ -19,6 +19,10 @@ const dmgPackager = fs.readFileSync(
   path.join(root, "scripts", "package-dmg.sh"),
   "utf8"
 );
+const windowsPackager = fs.readFileSync(
+  path.join(root, "scripts", "package-windows.cjs"),
+  "utf8"
+);
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
 test("uses LINE Cheater consistently as the desktop product name", () => {
@@ -39,6 +43,7 @@ test("reuses the macOS app icon for in-app branding", () => {
     2
   );
   assert.match(main, /\["\/assets\/icon\.png", path\.join\("assets", "icon\.png"\)\]/);
+  assert.match(main, /icon: path\.join\(__dirname, "assets", "icon\.png"\)/);
   assert.match(
     macPackager,
     /path\.join\(packagedSourceRoot, "native", "electron", "assets", "icon\.png"\)/
@@ -249,4 +254,24 @@ test("prefers the current debug sidecar during development", () => {
     main,
     /} else \{\s+candidates\.push\(path\.resolve\(__dirname, "\.\.", "\.\.", "target", "debug", executable\)\);\s+candidates\.push\(path\.resolve\(__dirname, "\.\.", "\.\.", "target", "release", executable\)\);/
   );
+});
+
+test("packages and verifies a Windows x64 ZIP with the release sidecar", () => {
+  assert.match(packageJson.scripts["package:win"], /build:native:win/);
+  assert.match(packageJson.scripts["package:win"], /package-windows\.cjs/);
+  assert.match(windowsPackager, /process\.platform !== "win32"/);
+  assert.match(windowsPackager, /process\.arch !== "x64"/);
+  assert.match(windowsPackager, /"line-cheater\.exe"/);
+  assert.match(windowsPackager, /"electron\.exe"/);
+  assert.match(windowsPackager, /"default_app\.asar"/);
+  assert.match(windowsPackager, /"assets", "icon\.ico"/);
+  assert.match(windowsPackager, /"rcedit-x64\.exe"/);
+  assert.match(windowsPackager, /"--set-icon"/);
+  assert.match(windowsPackager, /"Compress-Archive"/);
+  assert.match(windowsPackager, /"Expand-Archive"/);
+  assert.match(windowsPackager, /SHA256SUMS-Windows-x64\.txt/);
+  assert.match(windowsPackager, /verifiedSidecar, \["--version"\]/);
+  assert.match(main, /"line-cheater\.exe"/);
+  assert.match(main, /"line-cheater"/);
+  assert.doesNotMatch(main, /"line-backup-native\.exe"/);
 });
