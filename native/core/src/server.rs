@@ -334,8 +334,15 @@ struct ChatRemovalParams {
     planned: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkRemovalParams {
+    planned: bool,
+}
+
 struct AdvancedCleanupAnalysis {
     chats: Vec<Chat>,
+    community_chats: Vec<Chat>,
     orphan_messages: Vec<OrphanMessage>,
     line_empty_chats: u64,
     line_system_only_chats: u64,
@@ -719,10 +726,13 @@ fn handle_request<W: Write>(
         "setAttachmentMarked" => {
             let params: MarkParams = parse_params(request)?;
             session.catalog.set_marked(&params.path, params.marked)?;
-            Ok(serde_json::to_value(session.catalog.stats()?)?)
+            Ok(serde_json::to_value(session.catalog.cleanup_overview()?)?)
         }
         "clearManualAttachmentPlan" => Ok(serde_json::to_value(
             session.catalog.clear_manual_attachment_plan()?,
+        )?),
+        "clearAllRemovalPlans" => Ok(serde_json::to_value(
+            session.catalog.clear_all_user_removal_plans()?,
         )?),
         "stageAttachmentPreview" => {
             let params: PreviewParams = parse_params(request)?;
@@ -744,6 +754,14 @@ fn handle_request<W: Write>(
             let params: CleanupAuditParams = parse_params(request)?;
             Ok(serde_json::to_value(
                 session.catalog.cleanup_audit(params.limit)?,
+            )?)
+        }
+        "setAllChatAttachmentsPlanned" => {
+            let params: BulkRemovalParams = parse_params(request)?;
+            Ok(serde_json::to_value(
+                session
+                    .catalog
+                    .set_all_chat_attachments_planned(params.planned)?,
             )?)
         }
         "listCleanupGroups" => {
@@ -812,6 +830,42 @@ fn handle_request<W: Write>(
             Ok(serde_json::to_value(report_from_analysis(
                 session, &analysis,
             )?)?)
+        }
+        "setCommunityCleanupPlanned" => {
+            let params: BulkRemovalParams = parse_params(request)?;
+            let analysis = analyze_advanced_cleanup(session)?;
+            if !analysis.square_available {
+                anyhow::bail!("LineSquare.sqlite is not available");
+            }
+            let database_entry =
+                sibling_entry_name(&session.prepared.report.database_path, "LineSquare.sqlite");
+            let community_messages = analysis
+                .community_chats
+                .iter()
+                .map(|chat| chat.message_count.max(0) as u64)
+                .sum::<u64>()
+                .saturating_add(analysis.orphan_messages.len() as u64);
+            session.catalog.set_community_cleanup_planned(
+                &analysis.community_chats,
+                community_messages,
+                &database_entry,
+                params.planned,
+            )?;
+            Ok(serde_json::to_value(report_from_analysis(
+                session, &analysis,
+            )?)?)
+        }
+        "setOldAccountCleanupPlanned" => {
+            let params: BulkRemovalParams = parse_params(request)?;
+            let current_account_id = session
+                .prepared
+                .current_account_verified
+                .then_some(session.prepared.account_id.as_deref())
+                .flatten();
+            session
+                .catalog
+                .set_old_account_cleanup_planned(current_account_id, params.planned)?;
+            Ok(serde_json::to_value(advanced_cleanup_report(session)?)?)
         }
         "clearAdvancedCleanupPlan" => {
             session.catalog.clear_advanced_cleanup_plan()?;
@@ -918,24 +972,47 @@ fn analyze_advanced_cleanup(session: &NativeSession) -> Result<AdvancedCleanupAn
         .filter(|chat| chat.message_count > 0 && chat.human_message_count == 0)
         .count() as u64;
     let mut chats = line_chats;
-    let (square_available, square_empty_chats, square_system_only_chats, orphan_messages) =
-        if let Some(database) = session.square_database.as_ref() {
-            let square_chats = database.advanced_cleanup_chats()?;
-            let empty = square_chats
-                .iter()
-                .filter(|chat| chat.message_count == 0)
-                .count() as u64;
-            let system_only = square_chats
-                .iter()
-                .filter(|chat| chat.message_count > 0 && chat.human_message_count == 0)
-                .count() as u64;
-            chats.extend(square_chats);
-            (true, empty, system_only, database.orphan_messages()?)
-        } else {
-            (false, 0, 0, Vec::new())
-        };
+    let (
+        square_available,
+        community_chats,
+        square_empty_chats,
+        square_system_only_chats,
+        orphan_messages,
+    ) = if let Some(database) = session.square_database.as_ref() {
+        let all_square_chats = database.all_chats_for_cleanup()?;
+        let filtered_square_chats = all_square_chats
+            .iter()
+            .filter(|chat| chat.message_count == 0)
+            .cloned()
+            .chain(
+                all_square_chats
+                    .iter()
+                    .filter(|chat| chat.message_count > 0 && chat.human_message_count == 0)
+                    .cloned(),
+            )
+            .collect::<Vec<_>>();
+        let empty = filtered_square_chats
+            .iter()
+            .filter(|chat| chat.message_count == 0)
+            .count() as u64;
+        let system_only = filtered_square_chats
+            .iter()
+            .filter(|chat| chat.message_count > 0 && chat.human_message_count == 0)
+            .count() as u64;
+        chats.extend(filtered_square_chats);
+        (
+            true,
+            all_square_chats,
+            empty,
+            system_only,
+            database.orphan_messages()?,
+        )
+    } else {
+        (false, Vec::new(), 0, 0, Vec::new())
+    };
     Ok(AdvancedCleanupAnalysis {
         chats,
+        community_chats,
         orphan_messages,
         line_empty_chats,
         line_system_only_chats,
@@ -949,13 +1026,39 @@ fn report_from_analysis(
     session: &NativeSession,
     analysis: &AdvancedCleanupAnalysis,
 ) -> Result<AdvancedCleanupReport> {
+    let current_account_id = session
+        .prepared
+        .current_account_verified
+        .then_some(session.prepared.account_id.as_deref())
+        .flatten();
+    let old_accounts = session.catalog.old_account_summary(current_account_id)?;
+    let community_messages = analysis
+        .community_chats
+        .iter()
+        .map(|chat| chat.message_count.max(0) as u64)
+        .sum::<u64>()
+        .saturating_add(analysis.orphan_messages.len() as u64);
+    let community_database_entry =
+        sibling_entry_name(&session.prepared.report.database_path, "LineSquare.sqlite");
+    let community_cleanup = if analysis.square_available {
+        session
+            .catalog
+            .community_cleanup_summary(&analysis.community_chats, &community_database_entry)?
+    } else {
+        Default::default()
+    };
     session.catalog.advanced_cleanup_report(
         analysis.line_empty_chats,
         analysis.line_system_only_chats,
         analysis.square_available,
+        analysis.community_chats.len() as u64,
+        community_messages,
+        community_cleanup,
         analysis.square_empty_chats,
         analysis.square_system_only_chats,
         analysis.orphan_messages.len() as u64,
+        session.prepared.current_account_verified && old_accounts.current_account_found,
+        old_accounts,
     )
 }
 
@@ -1149,6 +1252,13 @@ fn cleanup_preflight(session: &mut NativeSession) -> Result<CleanupPreflightRepo
         marked_bytes: overview.marked_bytes,
         risks,
     })
+}
+
+fn sibling_entry_name(database_name: &str, filename: &str) -> String {
+    database_name
+        .rsplit_once('/')
+        .map(|(parent, _)| format!("{parent}/{filename}"))
+        .unwrap_or_else(|| filename.to_string())
 }
 
 fn list_empty_attachment_chats(

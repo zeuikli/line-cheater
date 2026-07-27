@@ -170,6 +170,10 @@
     return this.bridge.request("clearManualAttachmentPlan", {});
   };
 
+  NativeDataProvider.prototype.clearAllRemovalPlans = function () {
+    return this.bridge.request("clearAllRemovalPlans", {});
+  };
+
   NativeDataProvider.prototype.catalogStats = function () {
     return this.bridge.request("catalogStats", {});
   };
@@ -189,6 +193,12 @@
   NativeDataProvider.prototype.cleanupAudit = function (limit) {
     return this.bridge.request("cleanupAudit", {
       limit: boundedLimit(limit, 20)
+    });
+  };
+
+  NativeDataProvider.prototype.setAllChatAttachmentsPlanned = function (planned) {
+    return this.bridge.request("setAllChatAttachmentsPlanned", {
+      planned: Boolean(planned)
     });
   };
 
@@ -238,6 +248,18 @@
 
   NativeDataProvider.prototype.planAutomaticCleanup = function () {
     return this.bridge.request("planAutomaticCleanup", {});
+  };
+
+  NativeDataProvider.prototype.setCommunityCleanupPlanned = function (planned) {
+    return this.bridge.request("setCommunityCleanupPlanned", {
+      planned: Boolean(planned)
+    });
+  };
+
+  NativeDataProvider.prototype.setOldAccountCleanupPlanned = function (planned) {
+    return this.bridge.request("setOldAccountCleanupPlanned", {
+      planned: Boolean(planned)
+    });
   };
 
   NativeDataProvider.prototype.clearAdvancedCleanupPlan = function () {

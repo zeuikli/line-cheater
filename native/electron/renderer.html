@@ -21,7 +21,6 @@
         </header>
 
         <section class="welcome-card" aria-labelledby="welcome-title">
-          <div class="step-badge"><span>1</span> 選擇備份</div>
           <h2 id="welcome-title">從你的 LINE 備份開始</h2>
           <p class="welcome-copy">
             選擇一種備份來源。LINE Cheater 只會以唯讀方式解析原始資料，
@@ -159,7 +158,6 @@
               <aside class="panel chat-panel">
                 <div class="section-title compact">
                   <div>
-                    <p class="section-kicker">CONVERSATIONS</p>
                     <h3>聊天室</h3>
                   </div>
                 </div>
@@ -210,7 +208,6 @@
             <div class="panel cleanup-panel">
               <div class="section-title cleanup-heading">
                 <div>
-                  <p class="section-kicker">STORAGE CLEANUP</p>
                   <h2 id="cleanup-heading-title">清理附件</h2>
                   <p class="muted">依聊天室檢查附件，確認後再決定要刪除原始檔或縮圖。</p>
                 </div>
@@ -229,52 +226,9 @@
                 </div>
               </div>
               <div class="cleanup-controls">
-                <div class="cleanup-warning">
-                  <strong>還原前請保留原始檔</strong>
-                  <span>「SQLite 未引用」仍需人工確認；候選檔只會排除已標記附件，不會改動來源備份。</span>
-                </div>
-                <section id="cleanup-preflight" class="cleanup-preflight" aria-live="polite">
-                  <div class="cleanup-preflight-heading">
-                    <div>
-                      <strong id="cleanup-preflight-title">清理前盲點掃描</strong>
-                      <span id="cleanup-preflight-summary">正在檢查來源、索引與不確定檔案…</span>
-                    </div>
-                    <button id="refresh-cleanup-preflight" class="secondary-button" type="button" disabled>
-                      重新檢查
-                    </button>
-                  </div>
-                  <div id="cleanup-preflight-risks" class="cleanup-preflight-risks"></div>
-                </section>
-                <section id="cleanup-plan-previews" class="cleanup-plan-previews" aria-labelledby="cleanup-plan-previews-title">
-                  <div class="cleanup-plan-previews-heading">
-                    <div>
-                      <strong id="cleanup-plan-previews-title">清理方案預演</strong>
-                      <span id="cleanup-plan-previews-summary">預覽不同風險範圍；只有安全候選可自動套用。</span>
-                    </div>
-                  </div>
-                  <div id="cleanup-plan-cards" class="cleanup-plan-cards"></div>
-                </section>
-                <section id="cleanup-audit" class="cleanup-audit" aria-labelledby="cleanup-audit-title">
-                  <div class="cleanup-audit-heading">
-                    <div>
-                      <strong id="cleanup-audit-title">操作紀錄與可重現計畫</strong>
-                      <span id="cleanup-audit-summary">正在整理最近操作與計畫指紋…</span>
-                    </div>
-                    <div class="cleanup-audit-actions">
-                      <button id="refresh-cleanup-audit" class="secondary-button" type="button" disabled>
-                        重新整理
-                      </button>
-                      <button id="copy-cleanup-plan" class="secondary-button" type="button" disabled>
-                        複製計畫摘要
-                      </button>
-                    </div>
-                  </div>
-                  <div id="cleanup-audit-plan" class="cleanup-audit-plan"></div>
-                  <div id="cleanup-audit-events" class="cleanup-audit-events"></div>
-                </section>
                 <div class="cleanup-plan-bar" aria-live="polite">
                   <div>
-                    <strong>清理模式</strong>
+                    <strong>清理方式</strong>
                     <span id="cleanup-automation-summary">
                       安全自動清理只會標記已確認的圖片原檔，並保留非空縮圖。
                     </span>
@@ -283,11 +237,62 @@
                     <button id="plan-safe-attachment-cleanup" class="secondary-button" type="button" disabled>
                       自動標記安全瘦身
                     </button>
-                    <button id="clear-manual-attachment-plan" class="secondary-button" type="button" disabled>
+                    <label class="cleanup-global-check hidden" title="取消勾選只會撤回這次全選，原本逐項標記的附件仍會保留">
+                      <input id="cleanup-all-chat-attachments" type="checkbox" disabled>
+                      <span>所有聊天室附件</span>
+                    </label>
+                    <button id="clear-manual-attachment-plan" class="secondary-button hidden" type="button" disabled>
                       清除手動標記
                     </button>
                   </div>
                 </div>
+                <details id="cleanup-safety-details" class="cleanup-safety-details">
+                  <summary>
+                    <strong>安全與計畫詳情</strong>
+                    <span id="cleanup-safety-summary">正在檢查來源、索引與不確定檔案…</span>
+                  </summary>
+                  <div class="cleanup-safety-content">
+                    <section id="cleanup-preflight" class="cleanup-preflight" aria-live="polite">
+                      <div class="cleanup-preflight-heading">
+                        <div>
+                          <strong id="cleanup-preflight-title">清理前盲點掃描</strong>
+                          <span id="cleanup-preflight-summary">正在檢查來源、索引與不確定檔案…</span>
+                        </div>
+                        <button id="refresh-cleanup-preflight" class="secondary-button" type="button" disabled>
+                          重新檢查
+                        </button>
+                      </div>
+                      <div id="cleanup-preflight-risks" class="cleanup-preflight-risks"></div>
+                    </section>
+                    <section id="cleanup-plan-previews" class="cleanup-plan-previews" aria-labelledby="cleanup-plan-previews-title">
+                      <div class="cleanup-plan-previews-heading">
+                        <div>
+                          <strong id="cleanup-plan-previews-title">清理方案比較</strong>
+                          <span id="cleanup-plan-previews-summary">用來比較範圍，不會直接變更清理計畫。</span>
+                        </div>
+                      </div>
+                      <div id="cleanup-plan-cards" class="cleanup-plan-cards"></div>
+                    </section>
+                    <section id="cleanup-audit" class="cleanup-audit" aria-labelledby="cleanup-audit-title">
+                      <div class="cleanup-audit-heading">
+                        <div>
+                          <strong id="cleanup-audit-title">操作紀錄與可重現計畫</strong>
+                          <span id="cleanup-audit-summary">正在整理最近操作與計畫指紋…</span>
+                        </div>
+                        <div class="cleanup-audit-actions">
+                          <button id="refresh-cleanup-audit" class="secondary-button" type="button" disabled>
+                            重新整理
+                          </button>
+                          <button id="copy-cleanup-plan" class="secondary-button" type="button" disabled>
+                            複製計畫摘要
+                          </button>
+                        </div>
+                      </div>
+                      <div id="cleanup-audit-plan" class="cleanup-audit-plan"></div>
+                      <div id="cleanup-audit-events" class="cleanup-audit-events"></div>
+                    </section>
+                  </div>
+                </details>
                 <div class="cleanup-toolbar">
                   <label class="cleanup-search">
                     <span class="sr-only">搜尋附件</span>
@@ -326,7 +331,7 @@
                     </select>
                   </label>
                 </div>
-                <div id="category-summary" class="category-summary" aria-label="附件分類摘要"></div>
+                <p id="category-summary" class="category-summary" aria-live="polite"></p>
               </div>
               <div class="cleanup-results">
                 <p id="cleanup-result-info" class="cleanup-result-info" aria-live="polite"></p>
@@ -359,7 +364,6 @@
             <div class="panel duplicates-panel">
               <div class="section-title">
                 <div>
-                  <p class="section-kicker">EXACT DUPLICATES</p>
                   <h2 id="duplicates-heading-title">重複附件</h2>
                   <p class="muted">
                     只把大小相同且 SHA-256 完全一致的附件視為重複。
@@ -397,7 +401,6 @@
             <div class="panel advanced-panel">
               <div class="section-title">
                 <div>
-                  <p class="section-kicker">SQLITE CLEANUP</p>
                   <h2 id="advanced-heading-title">進階清理</h2>
                   <p class="muted">
                     掃描一般與社群資料庫中不會出現在聊天室列表的資料，加入瘦身計畫。
@@ -419,6 +422,43 @@
               </div>
 
               <div id="advanced-content" class="hidden">
+                <div class="advanced-bulk-grid" aria-live="polite">
+                  <article class="advanced-bulk-card danger">
+                    <div>
+                      <h3>刪除所有社群</h3>
+                      <p>
+                        移除目前帳號的整份 LineSquare.sqlite、暫存檔，以及所有能對應到社群的原始附件與縮圖。
+                      </p>
+                    </div>
+                    <dl>
+                      <div><dt>社群聊天室</dt><dd id="advanced-community-chats">—</dd></div>
+                      <div><dt>社群訊息</dt><dd id="advanced-community-messages">—</dd></div>
+                      <div><dt>估計可移除</dt><dd id="advanced-community-bytes">—</dd></div>
+                    </dl>
+                    <label class="advanced-cleanup-check">
+                      <input id="plan-community-cleanup" type="checkbox">
+                      <span>刪除所有社群</span>
+                    </label>
+                  </article>
+
+                  <article class="advanced-bulk-card danger">
+                    <div>
+                      <h3>刪除舊帳號</h3>
+                      <p id="advanced-old-account-state">
+                        正在確認目前使用的帳號資料夾。
+                      </p>
+                    </div>
+                    <dl>
+                      <div><dt>舊帳號資料夾</dt><dd id="advanced-old-account-folders">—</dd></div>
+                      <div><dt>可移除容量</dt><dd id="advanced-old-account-bytes">—</dd></div>
+                    </dl>
+                    <label class="advanced-cleanup-check">
+                      <input id="plan-old-account-cleanup" type="checkbox">
+                      <span>刪除所有舊帳號（只保留目前帳號）</span>
+                    </label>
+                  </article>
+                </div>
+
                 <div class="advanced-issue-grid" aria-live="polite">
                   <article class="advanced-issue-card">
                     <span>一般資料庫</span>
@@ -449,7 +489,6 @@
 
                 <section class="advanced-plan-summary" aria-labelledby="advanced-plan-heading">
                   <div>
-                    <p class="section-kicker">CANDIDATE PLAN</p>
                     <h3 id="advanced-plan-heading">清理計畫</h3>
                   </div>
                   <dl>
@@ -488,7 +527,6 @@
       <div class="package-modal-state" aria-hidden="true">
         <span class="package-modal-spinner"></span>
       </div>
-      <p class="section-kicker">LINE 備份</p>
       <h2 id="load-modal-title">正在讀取備份</h2>
       <p id="load-modal-message" class="package-modal-message" role="status" aria-live="polite">
         正在準備選取的檔案，請勿關閉此視窗。
@@ -505,6 +543,26 @@
     </section>
   </div>
 
+  <div id="cleanup-operation-modal" class="package-modal cleanup-operation-modal hidden"
+       role="dialog" aria-modal="true" aria-labelledby="cleanup-operation-title"
+       aria-describedby="cleanup-operation-message" aria-hidden="true">
+    <div class="package-modal-backdrop" aria-hidden="true"></div>
+    <section class="package-modal-card" role="document" tabindex="-1">
+      <div class="package-modal-state" aria-hidden="true">
+        <span class="package-modal-spinner"></span>
+      </div>
+      <h2 id="cleanup-operation-title">正在套用安全自動清理</h2>
+      <p id="cleanup-operation-message" class="package-modal-message" role="status" aria-live="polite">
+        正在標記符合安全規則的附件，請稍候。
+      </p>
+      <div class="package-modal-progress-track">
+        <div class="cleanup-operation-progress" role="progressbar"
+             aria-label="安全自動清理處理中" aria-valuetext="處理中"></div>
+      </div>
+      <p class="package-modal-progress-label">處理中</p>
+    </section>
+  </div>
+
   <div id="package-modal" class="package-modal is-processing hidden"
        role="dialog" aria-modal="true" aria-labelledby="package-modal-title"
        aria-describedby="package-modal-message" aria-hidden="true">
@@ -513,7 +571,6 @@
       <div class="package-modal-state" aria-hidden="true">
         <span class="package-modal-spinner"></span>
       </div>
-      <p class="section-kicker">瘦身封裝</p>
       <h2 id="package-modal-title">正在建立 .imazingapp</h2>
       <p id="package-modal-message" class="package-modal-message" role="status" aria-live="polite">
         正在整理保留的檔案，請勿關閉此視窗。
@@ -573,6 +630,20 @@
               aria-label="關閉圖片預覽">關閉</button>
       <img id="image-modal-image" alt="">
       <p id="image-modal-caption" class="image-modal-caption"></p>
+    </section>
+  </div>
+
+  <div id="confirmation-modal" class="confirmation-modal hidden" role="dialog" aria-modal="true"
+       aria-labelledby="confirmation-modal-title" aria-describedby="confirmation-modal-message"
+       aria-hidden="true">
+    <div class="confirmation-modal-backdrop" aria-hidden="true"></div>
+    <section class="confirmation-modal-card" role="document" tabindex="-1">
+      <h2 id="confirmation-modal-title">確認操作</h2>
+      <p id="confirmation-modal-message"></p>
+      <div class="confirmation-modal-actions">
+        <button id="confirmation-modal-cancel" class="secondary-button" type="button">取消</button>
+        <button id="confirmation-modal-confirm" class="primary-button" type="button">確認</button>
+      </div>
     </section>
   </div>
 

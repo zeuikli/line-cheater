@@ -202,12 +202,22 @@ Verified implementation:
   selection, delete-all, and reversible keep-thumbnail actions. The provider
   default remains 24 rows; the fixed desktop viewport requests four group rows
   while detail mode streams 24-review virtual batches.
+- [x] Add a cleanup-page checkbox that selects every attachment with an exact
+  `line` or `square` chat reference. Its derived plan is stored separately from
+  explicit per-file selections, so unchecking it reverses only the global
+  selection and rescanning can safely rebuild it from current SQLite evidence.
 - [x] Correlate cleanup paths against both `Line.sqlite` and the same-store
   `LineSquare.sqlite`, including community titles and senders.
 - [x] Add a desktop-only advanced mode that plans full-chat deletion, attaches
   source-aware files to that plan, detects empty/system-only chats, and removes
   `LineSquare.ZMESSAGE` rows whose `ZCHAT` no longer exists. SQLite mutation is
   applied only to snapshots inside the new candidate.
+- [x] Add guarded bulk-cleanup checkboxes for removing the complete current
+  account `LineSquare.sqlite` store plus correlated community attachments, and
+  for removing every non-current `PrivateStore/P_*` scope. Current-account
+  selection is accepted only when the chosen database path matches the `mid`
+  stored in a LINE preferences plist; otherwise old-account cleanup is disabled.
+  The community control reports its estimated removable file count and bytes.
 - [x] Add bounded local image previews. A preview is catalog-authorized, capped
   at 16 MiB, delivered through a tokenized local protocol, and never serialized
   into JSON. Archive previews are streamed on demand into a 32-file LRU cache.
@@ -556,6 +566,7 @@ Supported methods:
 - `cleanupPlanPreviews`
 - `cleanupAudit`
 - `clearManualAttachmentPlan`
+- `setAllChatAttachmentsPlanned`
 - `listCleanupGroups`
 - `listCleanupReviews`
 - `applyCleanupGroupAction`
@@ -641,6 +652,8 @@ It contains:
   chat path hint, persisted SQLite evidence/reference status, scan generation,
   and an optional exact-content SHA-256.
 - `removal_plan`: explicit user selections only.
+- `cleanup_scope_plan` and `all_chat_attachment_plan`: the reversible global
+  all-chat checkbox state and its exact, SQLite-confirmed attachment paths.
 - `chat_removal_plan` and `chat_removal_files`: source-aware chat/database
   deletion selections and their derived attachment paths, including exact
   database references and files whose path identifies the selected chat.
@@ -651,6 +664,9 @@ It contains:
   bounded history together with a SHA-256 plan fingerprint; the fingerprint is
   recomputed from the current source and plan rather than treated as an
   authorization token.
+- `bulk_cleanup_plan`, `bulk_removal_plan`, and `bulk_removal_scope`: guarded
+  complete-community and old-account selections, their exact cataloged files,
+  and old-account path prefixes used to remove explicit ZIP directory entries.
 
 A catalog is bound to one canonical source path. Reusing it for another source
 is rejected. Directory sources store a deterministic recursive metadata manifest

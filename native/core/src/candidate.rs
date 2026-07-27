@@ -92,6 +92,7 @@ struct DuplicateSymlinkPlan {
 struct CandidateBuildPlan<'a> {
     catalog: &'a Catalog,
     marked: &'a HashSet<String>,
+    bulk_prefixes: &'a [String],
     rewrites: &'a DatabaseRewrites,
     duplicate_symlinks: &'a DuplicateSymlinkPlan,
     full_crc: bool,
@@ -157,10 +158,27 @@ where
     }
     validate_output(&source, output, report.kind)?;
     let marked: HashSet<String> = catalog.marked_paths()?.into_iter().collect();
+    let bulk_marked: HashSet<String> = catalog.bulk_removal_paths()?.into_iter().collect();
+    let bulk_prefixes = catalog.bulk_removal_prefixes()?;
+    for prefix in &bulk_prefixes {
+        validate_old_account_prefix(prefix)?;
+        if path_is_in_prefix(&report.database_path, prefix) {
+            bail!("old-account cleanup plan includes the current Line.sqlite");
+        }
+    }
     for path in &marked {
-        if !is_removable_attachment(path) || is_protected(path) {
+        let approved_bulk_path = bulk_marked.contains(path)
+            && (is_removable_attachment(path)
+                || is_line_square_database(path)
+                || bulk_prefixes
+                    .iter()
+                    .any(|prefix| path_is_in_prefix(path, prefix)));
+        if (!is_removable_attachment(path) || is_protected(path)) && !approved_bulk_path {
             bail!("removal plan contains a protected or non-attachment path: {path}");
         }
+    }
+    if marked.contains(&report.database_path) {
+        bail!("removal plan cannot delete the current Line.sqlite");
     }
     let duplicate_symlinks = if link_duplicates {
         plan_duplicate_symlinks(catalog, &marked)?
@@ -168,10 +186,12 @@ where
         DuplicateSymlinkPlan::default()
     };
     let cleanup_plan = catalog.database_cleanup_plan()?;
+    let bulk_cleanup_counts = catalog.bulk_cleanup_counts()?;
     let rewrites = prepare_database_rewrites(&source, catalog, &cleanup_plan)?;
     let build_plan = CandidateBuildPlan {
         catalog,
         marked: &marked,
+        bulk_prefixes: &bulk_prefixes,
         rewrites: &rewrites,
         duplicate_symlinks: &duplicate_symlinks,
         full_crc,
@@ -200,6 +220,12 @@ where
     match build_result {
         Ok(mut candidate) => {
             fs::rename(&temporary, output)?;
+            candidate.removed_chats = candidate
+                .removed_chats
+                .saturating_add(bulk_cleanup_counts.0);
+            candidate.removed_messages = candidate
+                .removed_messages
+                .saturating_add(bulk_cleanup_counts.1);
             candidate.source_path = source.display().to_string();
             candidate.output_path = output.display().to_string();
             candidate.output_bytes = fs::metadata(output)?.len();
@@ -496,6 +522,7 @@ where
     let CandidateBuildPlan {
         catalog,
         marked,
+        bulk_prefixes,
         rewrites,
         duplicate_symlinks,
         full_crc,
@@ -518,6 +545,7 @@ where
     let output_file = File::create(temporary)?;
     let mut writer = ZipWriter::new(output_file).set_auto_large_file();
     let mut removed_found = HashSet::new();
+    let mut removed_scope_entries = 0_u64;
     let mut skipped_sidecars_found = 0_u64;
     let mut processed_bytes = 0_u64;
     let mut output_entries = 0_u64;
@@ -526,6 +554,23 @@ where
         ensure_stable_archive_name(&entry)?;
         let name = entry.name().to_string();
         processed_bytes = processed_bytes.saturating_add(entry.compressed_size());
+        if bulk_prefixes
+            .iter()
+            .any(|prefix| path_is_in_prefix(&name, prefix))
+        {
+            if marked.contains(&name) {
+                removed_found.insert(name);
+            } else {
+                removed_scope_entries = removed_scope_entries.saturating_add(1);
+            }
+            on_progress(CandidateProgress {
+                processed_bytes,
+                total_bytes,
+                processed_entries: (index + 1) as u64,
+                total_entries: input_entries,
+            })?;
+            continue;
+        }
         if entry.is_dir() {
             drop(entry);
             writer.raw_copy_file(archive.by_index(index)?)?;
@@ -627,7 +672,9 @@ where
     let mut protected_entries_verified: Vec<String> = protected_before
         .keys()
         .filter(|name| {
-            !rewrites.entries.contains_key(*name) && !rewrites.skipped_sidecars.contains(*name)
+            !marked.contains(*name)
+                && !rewrites.entries.contains_key(*name)
+                && !rewrites.skipped_sidecars.contains(*name)
         })
         .cloned()
         .collect();
@@ -643,7 +690,9 @@ where
         output_path: String::new(),
         input_entries,
         output_entries,
-        removed_entries: removed_found.len() as u64 + skipped_sidecars_found,
+        removed_entries: removed_found.len() as u64
+            + removed_scope_entries
+            + skipped_sidecars_found,
         removed_chats: rewrites.removed_chats(),
         removed_messages: rewrites.removed_messages(),
         linked_duplicate_entries: duplicate_symlinks.linked_entries(),
@@ -669,6 +718,7 @@ where
     let CandidateBuildPlan {
         catalog,
         marked,
+        bulk_prefixes: _,
         rewrites,
         duplicate_symlinks,
         full_crc,
@@ -806,7 +856,9 @@ where
     let mut protected_entries_verified: Vec<String> = protected_before
         .keys()
         .filter(|name| {
-            !rewrites.entries.contains_key(*name) && !rewrites.skipped_sidecars.contains(*name)
+            !marked.contains(*name)
+                && !rewrites.entries.contains_key(*name)
+                && !rewrites.skipped_sidecars.contains(*name)
         })
         .cloned()
         .collect();
@@ -893,6 +945,41 @@ fn is_removable_attachment(path: &str) -> bool {
     wrapped.contains("/Message Attachments/") || wrapped.contains("/Message Thumbnails/")
 }
 
+fn is_line_square_database(path: &str) -> bool {
+    path.ends_with("/Messages/LineSquare.sqlite")
+        || path.ends_with("/Messages/LineSquare.sqlite-wal")
+        || path.ends_with("/Messages/LineSquare.sqlite-shm")
+}
+
+fn path_is_in_prefix(path: &str, prefix: &str) -> bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn validate_old_account_prefix(prefix: &str) -> Result<()> {
+    if prefix.is_empty()
+        || prefix.starts_with('/')
+        || prefix.contains('\\')
+        || prefix
+            .split('/')
+            .any(|component| component.is_empty() || matches!(component, "." | ".."))
+    {
+        bail!("old-account cleanup contains an unsafe path prefix: {prefix}");
+    }
+    let segments = prefix.split('/').collect::<Vec<_>>();
+    if segments.len() < 2
+        || segments[segments.len() - 2] != "PrivateStore"
+        || !segments
+            .last()
+            .is_some_and(|account| account.starts_with("P_") && account.len() > 2)
+    {
+        bail!("old-account cleanup contains an invalid account prefix: {prefix}");
+    }
+    Ok(())
+}
+
 fn is_protected(path: &str) -> bool {
     path == ".lock"
         || path == "iTunesArtwork"
@@ -963,6 +1050,7 @@ fn verify_candidate(
 ) -> Result<()> {
     let CandidateBuildPlan {
         marked,
+        bulk_prefixes,
         rewrites,
         duplicate_symlinks,
         full_crc,
@@ -986,6 +1074,12 @@ fn verify_candidate(
         let name = entry.name().to_string();
         if marked.contains(&name) {
             bail!("candidate still contains a marked removal: {name}");
+        }
+        if bulk_prefixes
+            .iter()
+            .any(|prefix| path_is_in_prefix(&name, prefix))
+        {
+            bail!("candidate still contains an old-account path: {name}");
         }
         if skipped_entries.contains(&name) {
             bail!("candidate still contains a stale SQLite sidecar: {name}");
@@ -1030,7 +1124,10 @@ fn verify_candidate(
         }
     }
     for (name, expected_hash) in protected_before {
-        if rewritten_hashes.contains_key(name) || skipped_entries.contains(name) {
+        if marked.contains(name)
+            || rewritten_hashes.contains_key(name)
+            || skipped_entries.contains(name)
+        {
             continue;
         }
         let actual = hash_archive_entry(candidate, name)?;

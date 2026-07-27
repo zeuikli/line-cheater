@@ -200,6 +200,8 @@ test("forwards cleanup detail and group actions without exposing arbitrary metho
   await provider.applyCleanupGroupAction("chat:u1", "keep_thumbnail");
   await provider.planSafeAttachmentCleanup();
   await provider.clearManualAttachmentPlan();
+  await provider.clearAllRemovalPlans();
+  await provider.setAllChatAttachmentsPlanned(true);
   assert.equal(calls[0].params.groupKey, "chat:u1");
   assert.deepEqual(calls[1], {
     method: "applyCleanupGroupAction",
@@ -207,7 +209,12 @@ test("forwards cleanup detail and group actions without exposing arbitrary metho
   });
   assert.deepEqual(calls.slice(2), [
     { method: "planSafeAttachmentCleanup", params: {} },
-    { method: "clearManualAttachmentPlan", params: {} }
+    { method: "clearManualAttachmentPlan", params: {} },
+    { method: "clearAllRemovalPlans", params: {} },
+    {
+      method: "setAllChatAttachmentsPlanned",
+      params: { planned: true }
+    }
   ]);
   assert.throws(
     () => provider.applyCleanupGroupAction("chat:u1", "delete_now"),
@@ -256,9 +263,20 @@ test("validates and forwards advanced SQLite cleanup operations", async () => {
         lineEmptyChats: 0,
         lineSystemOnlyChats: 0,
         squareAvailable: true,
+        communityChats: 1,
+        communityMessages: 2,
+        communityFiles: 3,
+        communityBytes: 4,
+        communityCleanupPlanned: false,
         squareEmptyChats: 0,
         squareSystemOnlyChats: 0,
         orphanCommunityMessages: 0,
+        currentAccountDetected: true,
+        accountFolders: 2,
+        oldAccountFolders: 1,
+        oldAccountFiles: 3,
+        oldAccountBytes: 4,
+        oldAccountCleanupPlanned: false,
         automaticCleanupPlanned: false,
         plannedChats: 0,
         plannedDatabaseMessages: 0,
@@ -270,6 +288,8 @@ test("validates and forwards advanced SQLite cleanup operations", async () => {
   await provider.advancedCleanupReport();
   await provider.setChatRemovalPlanned("square", 8, true);
   await provider.planAutomaticCleanup();
+  await provider.setCommunityCleanupPlanned(true);
+  await provider.setOldAccountCleanupPlanned(true);
   await provider.clearAdvancedCleanupPlan();
   assert.deepEqual(calls, [
     { method: "advancedCleanupReport", params: {} },
@@ -278,6 +298,8 @@ test("validates and forwards advanced SQLite cleanup operations", async () => {
       params: { source: "square", chatPk: 8, planned: true }
     },
     { method: "planAutomaticCleanup", params: {} },
+    { method: "setCommunityCleanupPlanned", params: { planned: true } },
+    { method: "setOldAccountCleanupPlanned", params: { planned: true } },
     { method: "clearAdvancedCleanupPlan", params: {} }
   ]);
   assert.throws(

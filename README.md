@@ -41,10 +41,12 @@ LINE Cheater 是用來瀏覽、搜尋、整理與瘦身 iOS LINE App Container �
 - 手動、自動與聊天室清理計畫分開記錄，可獨立清除手動標記
 - 清理操作紀錄、可重現計畫 SHA-256 指紋與可複製的計畫摘要
 - 建立候選檔後顯示 CRC、保留檔、SQLite 重寫、輸出數量與警告驗證報告
+- 清理頁可用 checkbox 全選所有已確認的聊天室附件；取消全選只撤回該次全選，原本逐項標記仍保留
 - 完全相同附件掃描與安全保留一份
 - 大型備份的有界記憶體處理與可續跑工作
 - 依 CPU／實體記憶體自動調整 SQLite cache、mmap 與平行封存驗證 worker
 - 進階移除指定聊天室、空聊天室、僅系統訊息聊天室及孤立 `LineSquare` 訊息
+- 進階模式可用 checkbox 刪除整份社群資料（含 `LineSquare.sqlite` 與對應附件），或依偏好設定 `mid` 驗證目前帳號後刪除其他 `PrivateStore/P_*` 舊帳號資料夾
 - 在新建候選檔內重寫 SQLite、執行 `VACUUM`，並串流建立 ZIP64 `.imazingapp`
 
 桌面版產生的候選檔已成功通過實際 iMazing 流程還原到手機，還原後可正常開啟 LINE。

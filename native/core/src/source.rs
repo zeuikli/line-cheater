@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufWriter, Read, Write};
+use std::io::{BufWriter, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,6 +11,12 @@ use zip::ZipArchive;
 
 const STAGE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const STAGE_PROGRESS_STEP_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_ACCOUNT_PREFERENCE_BYTES: u64 = 16 * 1024 * 1024;
+const ACCOUNT_PREFERENCE_PATHS: [&str; 3] = [
+    "Container/AppGroups/group.com.linecorp.line/Library/Preferences/group.com.linecorp.line.plist",
+    "Container/Library/Preferences/jp.naver.line.plist",
+    "Container/Library/Preferences/group.com.linecorp.Line.encrypted.standard.plist",
+];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +37,7 @@ pub struct SourceReport {
     pub wal_present: bool,
     pub shm_present: bool,
     pub requires_staging: bool,
+    pub current_account_verified: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +45,7 @@ pub struct PreparedSource {
     pub report: SourceReport,
     pub original_path: PathBuf,
     pub account_id: Option<String>,
+    pub current_account_verified: bool,
     pub database_path: PathBuf,
     pub square_database_path: Option<PathBuf>,
     pub unified_group_database_path: Option<PathBuf>,
@@ -84,6 +92,15 @@ pub fn inspect_source(source: &Path) -> Result<SourceReport> {
         let database_metadata = fs::metadata(&database)?;
         let wal = sibling_with_suffix(&database, "-wal");
         let shm = sibling_with_suffix(&database, "-shm");
+        let account_id = account_id_from_database_path(
+            &database
+                .strip_prefix(&source)
+                .unwrap_or(&database)
+                .to_string_lossy(),
+        );
+        let current_account_verified = active_account_id_from_directory(&source)
+            .as_deref()
+            .is_some_and(|active| account_id.as_deref() == Some(active));
         return Ok(SourceReport {
             source_path: source.display().to_string(),
             kind: SourceKind::Directory,
@@ -97,6 +114,7 @@ pub fn inspect_source(source: &Path) -> Result<SourceReport> {
             wal_present: wal.is_file(),
             shm_present: shm.is_file(),
             requires_staging: false,
+            current_account_verified,
         });
     }
 
@@ -120,6 +138,7 @@ pub fn inspect_source(source: &Path) -> Result<SourceReport> {
             wal_present: wal.is_file(),
             shm_present: shm.is_file(),
             requires_staging: false,
+            current_account_verified: false,
         });
     }
 
@@ -147,6 +166,7 @@ where
     let report = inspect_source(source)?;
     let original_path = PathBuf::from(&report.source_path);
     let account_id = account_id_from_database_path(&report.database_path);
+    let current_account_verified = report.current_account_verified;
     match report.kind {
         SourceKind::Directory => {
             let database_path = original_path.join(Path::new(&report.database_path));
@@ -157,6 +177,7 @@ where
                 report,
                 original_path,
                 account_id,
+                current_account_verified,
                 database_path,
                 square_database_path,
                 unified_group_database_path,
@@ -168,6 +189,7 @@ where
             database_path: original_path.clone(),
             original_path,
             account_id,
+            current_account_verified: false,
             square_database_path: None,
             unified_group_database_path: None,
             staging_directory: None,
@@ -199,6 +221,7 @@ where
     let mut archive = open_archive(&source)?;
     let report = archive_report(&source, metadata.len(), &mut archive)?;
     let account_id = account_id_from_database_path(&report.database_path);
+    let current_account_verified = report.current_account_verified;
     let staging_directory = work_dir
         .join("staging")
         .join(staging_fingerprint(&source, &metadata));
@@ -209,6 +232,7 @@ where
         report,
         original_path: source,
         account_id,
+        current_account_verified,
         database_path,
         square_database_path,
         unified_group_database_path,
@@ -280,7 +304,8 @@ fn database_priority(path: &str) -> Option<u8> {
 }
 
 fn find_directory_database(root: &Path) -> Result<PathBuf> {
-    let mut best: Option<(u8, PathBuf)> = None;
+    let active_account = active_account_id_from_directory(root);
+    let mut candidates = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
         let entry = match entry {
             Ok(entry) => entry,
@@ -299,17 +324,20 @@ fn find_directory_database(root: &Path) -> Result<PathBuf> {
         let Some(priority) = database_priority(&normalized) else {
             continue;
         };
-        if best
-            .as_ref()
-            .is_none_or(|(best_priority, _)| priority < *best_priority)
-        {
-            best = Some((priority, entry.into_path()));
-            if priority == 0 {
-                break;
-            }
-        }
+        candidates.push((priority, normalized, entry.into_path()));
     }
-    best.map(|(_, path)| path)
+    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    if let Some(account_id) = active_account.as_deref()
+        && let Some((_, _, path)) = candidates
+            .iter()
+            .find(|(_, relative, _)| path_account_id(relative).as_deref() == Some(account_id))
+    {
+        return Ok(path.clone());
+    }
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, _, path)| path)
         .context("backup does not contain Messages/Line.sqlite")
 }
 
@@ -324,6 +352,10 @@ fn archive_report(
     archive: &mut ZipArchive<File>,
 ) -> Result<SourceReport> {
     let candidate = find_archive_database(archive)?;
+    let account_id = account_id_from_database_path(&candidate.name);
+    let current_account_verified = active_account_id_from_archive(archive)
+        .as_deref()
+        .is_some_and(|active| account_id.as_deref() == Some(active));
     let wal_present = find_archive_entry(archive, &format!("{}-wal", candidate.name)).is_some();
     let shm_present = find_archive_entry(archive, &format!("{}-shm", candidate.name)).is_some();
     Ok(SourceReport {
@@ -335,28 +367,86 @@ fn archive_report(
         wal_present,
         shm_present,
         requires_staging: true,
+        current_account_verified,
     })
 }
 
 fn find_archive_database(archive: &mut ZipArchive<File>) -> Result<ArchiveDatabaseCandidate> {
-    let mut best: Option<(u8, usize, String)> = None;
+    let active_account = active_account_id_from_archive(archive);
+    let mut candidates = Vec::new();
     for (index, name) in archive.file_names().enumerate() {
         let Some(priority) = database_priority(name) else {
             continue;
         };
-        if best
-            .as_ref()
-            .is_none_or(|(current, _, _)| priority < *current)
-        {
-            best = Some((priority, index, name.to_string()));
-            if priority == 0 {
-                break;
-            }
-        }
+        candidates.push((priority, index, name.to_string()));
     }
-    let (_, index, name) = best.context(".imazingapp does not contain Messages/Line.sqlite")?;
+    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.2.cmp(&right.2)));
+    let selected = active_account
+        .as_deref()
+        .and_then(|account_id| {
+            candidates
+                .iter()
+                .find(|(_, _, name)| path_account_id(name).as_deref() == Some(account_id))
+        })
+        .cloned()
+        .or_else(|| candidates.into_iter().next());
+    let (_, index, name) = selected.context(".imazingapp does not contain Messages/Line.sqlite")?;
     let bytes = archive.by_index(index)?.size();
     Ok(ArchiveDatabaseCandidate { name, bytes })
+}
+
+fn active_account_id_from_directory(root: &Path) -> Option<String> {
+    ACCOUNT_PREFERENCE_PATHS.iter().find_map(|relative| {
+        let path = root.join(relative);
+        let metadata = path.metadata().ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_ACCOUNT_PREFERENCE_BYTES {
+            return None;
+        }
+        let bytes = fs::read(path).ok()?;
+        active_account_id_from_plist(&bytes)
+    })
+}
+
+fn active_account_id_from_archive(archive: &mut ZipArchive<File>) -> Option<String> {
+    for wanted in ACCOUNT_PREFERENCE_PATHS {
+        let Some(index) = find_archive_entry(archive, wanted) else {
+            continue;
+        };
+        let mut entry = archive.by_index(index).ok()?;
+        if !entry.is_file() || entry.size() > MAX_ACCOUNT_PREFERENCE_BYTES {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if entry.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        drop(entry);
+        if let Some(account_id) = active_account_id_from_plist(&bytes) {
+            return Some(account_id);
+        }
+    }
+    None
+}
+
+fn active_account_id_from_plist(bytes: &[u8]) -> Option<String> {
+    let value = plist::Value::from_reader(Cursor::new(bytes)).ok()?;
+    let dictionary = value.as_dictionary()?;
+    ["mid", "userMID"].into_iter().find_map(|key| {
+        dictionary
+            .get(key)
+            .and_then(plist::Value::as_string)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn path_account_id(path: &str) -> Option<String> {
+    path.replace('\\', "/")
+        .split('/')
+        .find_map(|segment| segment.strip_prefix("P_"))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn stage_archive_databases<F>(

@@ -7,7 +7,9 @@ pub mod server;
 pub mod source;
 
 pub use candidate::{CandidateProgress, CandidateReport, build_candidate};
-pub use catalog::{Catalog, CatalogContextProgress, CatalogScanProgress};
+pub use catalog::{
+    BulkRemovalSummary, Catalog, CatalogContextProgress, CatalogScanProgress, OldAccountSummary,
+};
 pub use database::{LineDatabase, LineSquareDatabase, UnifiedGroupDatabase};
 pub use model::{
     AdvancedCleanupReport, AttachmentContext, AttachmentCursor, AttachmentItem, AttachmentKind,

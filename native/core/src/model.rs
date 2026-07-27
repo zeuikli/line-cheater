@@ -243,6 +243,7 @@ pub struct CleanupOverview {
     pub automatic_marked_count: u64,
     pub automatic_marked_bytes: u64,
     pub context_status: String,
+    pub all_chat_attachments_planned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -388,9 +389,20 @@ pub struct AdvancedCleanupReport {
     pub line_empty_chats: u64,
     pub line_system_only_chats: u64,
     pub square_available: bool,
+    pub community_chats: u64,
+    pub community_messages: u64,
+    pub community_files: u64,
+    pub community_bytes: u64,
+    pub community_cleanup_planned: bool,
     pub square_empty_chats: u64,
     pub square_system_only_chats: u64,
     pub orphan_community_messages: u64,
+    pub current_account_detected: bool,
+    pub account_folders: u64,
+    pub old_account_folders: u64,
+    pub old_account_files: u64,
+    pub old_account_bytes: u64,
+    pub old_account_cleanup_planned: bool,
     pub automatic_cleanup_planned: bool,
     pub planned_chats: u64,
     pub planned_database_messages: u64,

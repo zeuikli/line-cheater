@@ -297,7 +297,10 @@ test("keeps cleanup bounded while presenting a continuous month-sectioned album"
   assert.match(renderer, /choice\.setAttribute\("aria-description", impactText\)/);
   assert.match(styles, /\.workspace-content\s*\{[^}]*overflow: hidden/);
   assert.match(styles, /\.cleanup-panel\s*\{[^}]*height: 100%[^}]*overflow: hidden/);
-  assert.match(styles, /\.cleanup-group-list\s*\{[^}]*grid-template-rows: repeat\(4,/);
+  assert.match(
+    styles,
+    /\.cleanup-group-list\s*\{[^}]*grid-template-rows: repeat\(var\(--cleanup-group-rows, 5\),/
+  );
   assert.match(styles, /\.cleanup-review-grid\s*\{[^}]*repeat\(auto-fill, minmax\(min\(180px,/);
   assert.match(styles, /\.cleanup-month-header\s*\{[^}]*position: sticky/);
   assert.match(styles, /\.cleanup-preview img\s*\{[^}]*object-fit: contain/);
@@ -306,6 +309,40 @@ test("keeps cleanup bounded while presenting a continuous month-sectioned album"
   assert.match(styles, /\.cleanup-impact\s*\{\s*display: none/);
   assert.match(styles, /#cleanup-view\.is-detail \.category-summary\s*\{\s*display: none/);
   assert.match(styles, /#cleanup-view\.is-detail \.cleanup-warning\s*\{\s*display: none/);
+});
+
+test("sizes cleanup pages from the visible list height without losing position", () => {
+  assert.match(renderer, /let cleanupPageSize = 5/);
+  assert.match(renderer, /function calculateCleanupPageSize\(\)/);
+  assert.match(renderer, /Math\.min\(10, Math\.max\(5, Math\.floor\(\(listHeight - 14\) \/ 52\)\)\)/);
+  assert.match(renderer, /function syncCleanupPageSize\(\)/);
+  assert.match(renderer, /const firstItemIndex = \(currentPage - 1\) \* cleanupPageSize/);
+  assert.match(renderer, /cleanupState\.page = Math\.floor\(firstItemIndex \/ cleanupPageSize\) \+ 1/);
+  assert.match(renderer, /pageSize: overrides\.pageSize \|\| cleanupPageSize/);
+  assert.match(renderer, /activeWorkspaceView === "cleanup" && cleanupPage && syncCleanupPageSize\(\)/);
+});
+
+test("uses an accessible shared modal for every confirmation", () => {
+  assert.match(html, /id="confirmation-modal" class="confirmation-modal hidden" role="dialog" aria-modal="true"/);
+  assert.match(html, /id="confirmation-modal-cancel"/);
+  assert.match(html, /id="confirmation-modal-confirm"/);
+  assert.match(renderer, /function requestConfirmation\(options\)/);
+  assert.match(renderer, /function closeConfirmationModal\(confirmed\)/);
+  assert.match(renderer, /function trapModalFocus\(event, modal\)/);
+  assert.match(renderer, /confirmationModalConfirm\.addEventListener\("click", \(\) => closeConfirmationModal\(true\)\)/);
+  assert.doesNotMatch(renderer, /window\.confirm/);
+  assert.match(styles, /\.confirmation-modal-card\s*\{/);
+  assert.match(styles, /body\.confirmation-modal-open/);
+});
+
+test("asks how to handle a restored cleanup plan and synchronizes modal locking", () => {
+  assert.match(renderer, /function resolveRestoredCleanupPlan\(overview\)/);
+  assert.match(renderer, /發現先前的清理計畫/);
+  assert.match(renderer, /cancelLabel: "復原前次計畫"/);
+  assert.match(renderer, /provider\.clearAllRemovalPlans\(\)/);
+  assert.match(renderer, /function syncModalBusy\(\)/);
+  assert.match(renderer, /modalStates\.some/);
+  assert.match(main, /"clearAllRemovalPlans"/);
 });
 
 test("reuses cleanup overview while paging groups", () => {
@@ -317,29 +354,55 @@ test("reuses cleanup overview while paging groups", () => {
   assert.match(renderer, /cleanupPage = cleanupOverview = null;/);
 });
 
+test("reuses the mark response instead of fetching cleanup overview twice", () => {
+  const markHandler = renderer.match(
+    /async function changeAttachmentMark\(checkbox\) \{([\s\S]*?)\n\}\n\nasync function toggleAllChatAttachments/
+  )[1];
+  assert.match(markHandler, /cleanupOverview = await provider\.setAttachmentMarked\(path, checkbox\.checked\)/);
+  assert.doesNotMatch(markHandler, /provider\.cleanupOverview\(\)/);
+  assert.match(markHandler, /if \(advancedMode\) await refreshAdvancedPlanSummary\(\)/);
+});
+
 test("exposes separate safe-automatic and manual cleanup controls", () => {
   assert.match(html, /id="plan-safe-attachment-cleanup"/);
   assert.match(html, /id="clear-manual-attachment-plan"/);
+  assert.match(html, /id="cleanup-operation-modal"/);
   assert.match(renderer, /provider\.planSafeAttachmentCleanup\(\)/);
+  assert.match(renderer, /function showCleanupOperationModal\(clearing\)/);
+  assert.match(renderer, /await waitForUiPaint\(\);\s+cleanupOverview = await provider\.planSafeAttachmentCleanup\(\)/);
+  assert.match(renderer, /closeCleanupOperationModal\(\)/);
   assert.match(renderer, /provider\.clearManualAttachmentPlan\(\)/);
   assert.match(renderer, /removalReason === "automatic"/);
   assert.match(main, /"planSafeAttachmentCleanup"/);
   assert.match(main, /"clearManualAttachmentPlan"/);
+  assert.match(styles, /\.cleanup-operation-progress\s*\{/);
+});
+
+test("keeps cleanup safety details available without crowding the main flow", () => {
+  assert.match(html, /id="cleanup-safety-details" class="cleanup-safety-details"/);
+  assert.match(html, /id="cleanup-safety-summary"/);
+  assert.match(renderer, /cleanupSafetyDetails\.open = blockers > 0/);
+  assert.match(styles, /\.cleanup-safety-details\s*\{/);
+  assert.doesNotMatch(html, /class="category-card"/);
 });
 
 test("surfaces cleanup blindspot scans, plan previews, and candidate verification", () => {
   assert.match(html, /id="cleanup-preflight"/);
   assert.match(html, /id="refresh-cleanup-preflight"/);
   assert.match(html, /id="cleanup-plan-cards"/);
+  assert.match(html, /清理方案比較/);
   assert.match(html, /id="package-modal-report"/);
   assert.match(renderer, /provider\.cleanupPreflight\(\)/);
   assert.match(renderer, /provider\.cleanupPlanPreviews\(\)/);
   assert.match(renderer, /function renderCleanupPreflight\(\)/);
   assert.match(renderer, /function renderCleanupPlanPreviews\(\)/);
+  assert.match(renderer, /建議方案，可直接套用/);
+  assert.match(renderer, /僅供比較，不會套用/);
   assert.match(renderer, /function renderCandidateReport\(report\)/);
   assert.match(renderer, /Number\(cleanupPreflight\.blockerCount\)/);
   assert.match(main, /"cleanupPreflight"/);
   assert.match(main, /"cleanupPlanPreviews"/);
+  assert.match(styles, /\.cleanup-plan-status\.recommended\s*\{/);
 });
 
 test("surfaces cleanup audit history and restore checklist", () => {
@@ -355,6 +418,22 @@ test("surfaces cleanup audit history and restore checklist", () => {
   assert.match(renderer, /if \(!await requestRestoreChecklist\(\)\) return;/);
   assert.match(main, /"cleanupAudit"/);
   assert.match(styles, /\.restore-checklist-modal\s*\{/);
+});
+
+test("offers a reversible checkbox for selecting every chat attachment", () => {
+  assert.match(html, /id="cleanup-all-chat-attachments" type="checkbox" disabled/);
+  assert.match(html, /所有聊天室附件/);
+  assert.match(main, /"setAllChatAttachmentsPlanned"/);
+  assert.match(renderer, /function toggleAllChatAttachments\(\)/);
+  assert.match(renderer, /provider\.setAllChatAttachmentsPlanned\(planned\)/);
+  assert.match(renderer, /取消勾選可撤回這次全選/);
+  assert.match(renderer, /allChatAttachmentsPlanned/);
+  assert.match(renderer, /function syncAllChatAttachmentsCheckbox\(\)/);
+  assert.match(
+    renderer,
+    /cleanupLoading = false;\s+syncCleanupPageInput\(\);\s+syncAllChatAttachmentsCheckbox\(\)/
+  );
+  assert.match(styles, /\.cleanup-global-check\s*\{/);
 });
 
 test("supports cleanup page jumps and restores the overview page after chat detail", () => {
@@ -410,6 +489,12 @@ test("gates SQLite mutation planning behind desktop advanced mode", () => {
   assert.match(html, /id="advanced-mode"[^>]*role="switch"/);
   assert.match(html, /data-view="advanced"/);
   assert.match(html, /id="plan-automatic-cleanup"/);
+  assert.match(html, /id="plan-community-cleanup" type="checkbox"/);
+  assert.match(html, /id="plan-old-account-cleanup" type="checkbox"/);
+  assert.match(html, /id="advanced-community-bytes"/);
+  assert.match(html, /估計可移除/);
+  assert.match(html, /刪除所有社群/);
+  assert.match(html, /只保留目前帳號/);
   assert.match(html, /id="advanced-build-candidate"/);
   assert.match(html, /建立瘦身 \.imazingapp/);
   assert.doesNotMatch(html, /advanced-cleanup-marked/);
@@ -418,6 +503,9 @@ test("gates SQLite mutation planning behind desktop advanced mode", () => {
   assert.doesNotMatch(html, /id="clear-advanced-plan"/);
   assert.match(renderer, /provider\.setChatRemovalPlanned\(/);
   assert.match(renderer, /provider\.planAutomaticCleanup\(\)/);
+  assert.match(renderer, /provider\.setCommunityCleanupPlanned\(!planned\)/);
+  assert.match(renderer, /provider\.setOldAccountCleanupPlanned\(!planned\)/);
+  assert.match(renderer, /report\.currentAccountDetected/);
   assert.match(renderer, /elements\.advancedBuildCandidate\.addEventListener\("click", \(\) => void buildCandidate\(\)\)/);
   assert.doesNotMatch(renderer, /cleanupMarkedFiles|cleanupMarkedBytes/);
   assert.match(renderer, /report\.automaticCleanupPlanned/);
@@ -427,6 +515,8 @@ test("gates SQLite mutation planning behind desktop advanced mode", () => {
   assert.match(main, /"advancedCleanupReport"/);
   assert.match(main, /"setChatRemovalPlanned"/);
   assert.match(main, /"planAutomaticCleanup"/);
+  assert.match(main, /"setCommunityCleanupPlanned"/);
+  assert.match(main, /"setOldAccountCleanupPlanned"/);
 });
 
 test("does not duplicate DOM ids in the app shell", () => {

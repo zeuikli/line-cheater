@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::anyhow;
 use line_backup_native::{
-    AttachmentKind, Catalog, ChatCursor, LineDatabase, LineSquareDatabase, MessageCursor,
-    NativeSession, PreparePhase, SourceKind, UnifiedGroupDatabase, build_candidate, inspect_source,
-    prepare_source, prepare_source_reporting, serve,
+    AttachmentKind, BulkRemovalSummary, Catalog, ChatCursor, LineDatabase, LineSquareDatabase,
+    MessageCursor, NativeSession, OldAccountSummary, PreparePhase, SourceKind,
+    UnifiedGroupDatabase, build_candidate, inspect_source, prepare_source,
+    prepare_source_reporting, serve,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -77,6 +78,42 @@ fn make_fixture(root: &Path) -> PathBuf {
         .unwrap();
     connection.close().unwrap();
     source
+}
+
+fn add_active_account_preference(source: &Path, account_id: &str) {
+    let preference = source.join(
+        "Container/AppGroups/group.com.linecorp.line/Library/Preferences/group.com.linecorp.line.plist",
+    );
+    fs::create_dir_all(preference.parent().unwrap()).unwrap();
+    fs::write(
+        preference,
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
+             \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\
+             <plist version=\"1.0\"><dict><key>mid</key><string>{account_id}</string></dict></plist>"
+        ),
+    )
+    .unwrap();
+}
+
+fn add_old_account_fixture(source: &Path) -> PathBuf {
+    let old_account = source.join(
+        "Container/AppGroups/group.com.linecorp.line/Library/Application Support/PrivateStore/P_old",
+    );
+    fs::create_dir_all(old_account.join("Messages")).unwrap();
+    fs::create_dir_all(old_account.join("Message Attachments/old-chat")).unwrap();
+    fs::write(
+        old_account.join("Messages/Line.sqlite"),
+        b"old account database",
+    )
+    .unwrap();
+    fs::write(
+        old_account.join("Message Attachments/old-chat/76543210.bin"),
+        b"old account attachment",
+    )
+    .unwrap();
+    old_account
 }
 
 fn add_many_attachment_contexts(source: &Path, count: u32) {
@@ -230,6 +267,54 @@ fn inspects_private_store_database_and_opens_read_only() {
     let database = LineDatabase::open(&prepared.database_path).unwrap();
     assert!(database.is_read_only().unwrap());
     assert_eq!(database.quick_check().unwrap(), "ok");
+}
+
+#[test]
+fn selects_the_verified_current_account_from_multiple_private_stores() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    add_old_account_fixture(&source);
+    add_active_account_preference(&source, "test");
+
+    let report = inspect_source(&source).unwrap();
+    assert!(report.database_path.contains("PrivateStore/P_test/"));
+    let prepared = prepare_source(&source, &temporary.path().join("directory-work")).unwrap();
+    assert_eq!(prepared.account_id.as_deref(), Some("test"));
+    assert!(prepared.current_account_verified);
+
+    let archive_path = temporary.path().join("multiple-accounts.imazingapp");
+    let mut archive = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
+    let options = SimpleFileOptions::default();
+    let old_database = "Container/AppGroups/group.com.linecorp.line/Library/Application Support/PrivateStore/P_old/Messages/Line.sqlite";
+    archive.start_file(old_database, options).unwrap();
+    archive.write_all(b"old database first").unwrap();
+    archive
+        .start_file(
+            "Container/AppGroups/group.com.linecorp.line/Library/Preferences/group.com.linecorp.line.plist",
+            options,
+        )
+        .unwrap();
+    archive
+        .write_all(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+              <plist version=\"1.0\"><dict><key>mid</key><string>test</string></dict></plist>",
+        )
+        .unwrap();
+    archive.start_file(&report.database_path, options).unwrap();
+    archive
+        .write_all(&fs::read(source.join(&report.database_path)).unwrap())
+        .unwrap();
+    archive.finish().unwrap();
+
+    let archive_report = inspect_source(&archive_path).unwrap();
+    assert!(
+        archive_report
+            .database_path
+            .contains("PrivateStore/P_test/")
+    );
+    let prepared = prepare_source(&archive_path, &temporary.path().join("archive-work")).unwrap();
+    assert_eq!(prepared.account_id.as_deref(), Some("test"));
+    assert!(prepared.current_account_verified);
 }
 
 #[test]
@@ -869,7 +954,19 @@ fn catalogs_attachments_on_disk_and_persists_plan() {
     catalog.set_marked(&page.items[0].path, true).unwrap();
     assert_eq!(catalog.stats().unwrap().marked_count, 1);
     let advanced = catalog
-        .advanced_cleanup_report(0, 0, false, 0, 0, 0)
+        .advanced_cleanup_report(
+            0,
+            0,
+            false,
+            0,
+            0,
+            BulkRemovalSummary::default(),
+            0,
+            0,
+            0,
+            false,
+            OldAccountSummary::default(),
+        )
         .unwrap();
     assert_eq!(advanced.planned_files, 1);
     assert_eq!(advanced.planned_bytes, page.items[0].bytes);
@@ -920,7 +1017,19 @@ fn opening_a_native_session_preserves_persisted_removal_plans() {
     assert_eq!(marked_paths.len(), 2);
     assert!(marked_paths.contains(&attachment.path));
     let report = catalog
-        .advanced_cleanup_report(0, 0, false, 0, 0, 0)
+        .advanced_cleanup_report(
+            0,
+            0,
+            false,
+            0,
+            0,
+            BulkRemovalSummary::default(),
+            0,
+            0,
+            0,
+            false,
+            OldAccountSummary::default(),
+        )
         .unwrap();
     assert_eq!(report.planned_chats, 1);
     assert_eq!(report.planned_database_messages, 4);
@@ -1300,6 +1409,66 @@ fn cleanup_context_includes_line_square_communities() {
         reviews.items[0].context.as_ref().unwrap().sender_name,
         "Square Sender"
     );
+}
+
+#[test]
+fn all_chat_attachment_selection_is_reversible_and_preserves_manual_marks() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    add_square_fixture(&source);
+    let unreferenced_path = "Container/AppGroups/group.com.linecorp.line/Library/Application Support/PrivateStore/\
+P_test/Message Attachments/ghost/99999999.jpg";
+    let manual_path = "Container/AppGroups/group.com.linecorp.line/Library/Application Support/PrivateStore/\
+P_test/Message Attachments/u1/12345678.jpg";
+    let unreferenced_file = source.join(unreferenced_path);
+    fs::create_dir_all(unreferenced_file.parent().unwrap()).unwrap();
+    fs::write(&unreferenced_file, b"not referenced by sqlite").unwrap();
+
+    let prepared = prepare_source(&source, &temporary.path().join("work")).unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let square_database =
+        LineSquareDatabase::open(prepared.square_database_path.as_deref().unwrap()).unwrap();
+    let mut catalog =
+        Catalog::open(&temporary.path().join("work/all-chat-selection.sqlite")).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    catalog
+        .index_attachment_contexts(&database, Some(&square_database), None, |_| {})
+        .unwrap();
+
+    catalog.set_marked(manual_path, true).unwrap();
+    let overview = catalog.set_all_chat_attachments_planned(true).unwrap();
+    assert!(overview.all_chat_attachments_planned);
+    assert_eq!(overview.marked_count, 3);
+    let marked = catalog.marked_paths().unwrap();
+    assert!(marked.contains(&manual_path.to_string()));
+    assert!(!marked.contains(&unreferenced_path.to_string()));
+
+    catalog
+        .index_attachment_contexts(&database, Some(&square_database), None, |_| {})
+        .unwrap();
+    assert_eq!(catalog.marked_paths().unwrap().len(), 3);
+
+    let overview = catalog.set_all_chat_attachments_planned(false).unwrap();
+    assert!(!overview.all_chat_attachments_planned);
+    assert_eq!(overview.marked_count, 1);
+    assert_eq!(
+        catalog.marked_paths().unwrap(),
+        vec![manual_path.to_string()]
+    );
+    let audit = catalog.cleanup_audit(20).unwrap();
+    assert_eq!(audit.events[0].action, "clear_all_chat_attachments");
+    assert!(
+        audit
+            .events
+            .iter()
+            .any(|event| event.action == "plan_all_chat_attachments")
+    );
+    let overview = catalog.clear_all_user_removal_plans().unwrap();
+    assert_eq!(overview.marked_count, 0);
+    assert!(!overview.all_chat_attachments_planned);
+    assert!(catalog.marked_paths().unwrap().is_empty());
 }
 
 #[test]
@@ -1746,7 +1915,19 @@ fn advanced_cleanup_rewrites_candidate_sqlite_and_removes_chat_files_only() {
     assert_eq!(planned_group.chat_pk, Some(7));
     assert!(planned_group.planned_for_chat_removal);
     let advanced = catalog
-        .advanced_cleanup_report(1, 1, true, 1, 1, 1)
+        .advanced_cleanup_report(
+            1,
+            1,
+            true,
+            0,
+            0,
+            BulkRemovalSummary::default(),
+            1,
+            1,
+            1,
+            false,
+            OldAccountSummary::default(),
+        )
         .unwrap();
     assert!(advanced.automatic_cleanup_planned);
     assert_eq!(advanced.planned_chats, 5);
@@ -1831,12 +2012,133 @@ fn advanced_cleanup_rewrites_candidate_sqlite_and_removes_chat_files_only() {
 
     catalog.plan_automatic_cleanup(&filtered, &orphans).unwrap();
     let advanced = catalog
-        .advanced_cleanup_report(1, 1, true, 1, 1, 1)
+        .advanced_cleanup_report(
+            1,
+            1,
+            true,
+            0,
+            0,
+            BulkRemovalSummary::default(),
+            1,
+            1,
+            1,
+            false,
+            OldAccountSummary::default(),
+        )
         .unwrap();
     assert!(!advanced.automatic_cleanup_planned);
     assert_eq!(advanced.planned_chats, 1);
     assert_eq!(advanced.planned_database_messages, 4);
     assert_eq!(advanced.planned_files, 3);
+}
+
+#[test]
+fn deletes_the_complete_community_database_and_matching_attachments() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    add_square_fixture(&source);
+    let report = inspect_source(&source).unwrap();
+    let prepared = prepare_source(&source, &temporary.path().join("community-work")).unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let square_database =
+        LineSquareDatabase::open(prepared.square_database_path.as_deref().unwrap()).unwrap();
+    let mut catalog =
+        Catalog::open(&temporary.path().join("community-work/catalog.sqlite")).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    catalog
+        .index_attachment_contexts(&database, Some(&square_database), None, |_| {})
+        .unwrap();
+
+    let chats = square_database.all_chats_for_cleanup().unwrap();
+    let community_messages = chats
+        .iter()
+        .map(|chat| chat.message_count.max(0) as u64)
+        .sum::<u64>();
+    let square_entry = report
+        .database_path
+        .rsplit_once('/')
+        .map(|(parent, _)| format!("{parent}/LineSquare.sqlite"))
+        .unwrap();
+    let summary = catalog
+        .community_cleanup_summary(&chats, &square_entry)
+        .unwrap();
+    let square_bytes = fs::metadata(prepared.square_database_path.as_ref().unwrap())
+        .unwrap()
+        .len();
+    assert_eq!(summary.files, 2);
+    assert!(summary.bytes > square_bytes);
+
+    catalog
+        .set_community_cleanup_planned(&chats, community_messages, &square_entry, true)
+        .unwrap();
+    assert!(catalog.bulk_cleanup_planned("community").unwrap());
+    let output = temporary.path().join("LINE-no-communities.imazingapp");
+    let candidate = build_candidate(&source, &output, &catalog, true, false, |_| Ok(())).unwrap();
+    assert_eq!(candidate.removed_chats, chats.len() as u64);
+    assert_eq!(candidate.removed_messages, community_messages);
+    assert_eq!(candidate.removed_entries, summary.files);
+
+    let mut archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    assert!(archive.by_name(&square_entry).is_err());
+    assert!(
+        archive
+            .file_names()
+            .all(|name| !name.contains("/Message Attachments/square-chat/"))
+    );
+    assert!(source.join(&square_entry).is_file());
+    assert!(archive.by_name(&report.database_path).is_ok());
+}
+
+#[test]
+fn deletes_every_old_account_scope_and_preserves_the_verified_current_account() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    let old_account = add_old_account_fixture(&source);
+    add_active_account_preference(&source, "test");
+    let report = inspect_source(&source).unwrap();
+    let prepared = prepare_source(&source, &temporary.path().join("account-work")).unwrap();
+    assert!(prepared.current_account_verified);
+    assert_eq!(prepared.account_id.as_deref(), Some("test"));
+
+    let mut catalog = Catalog::open(&temporary.path().join("account-work/catalog.sqlite")).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    let summary = catalog.old_account_summary(Some("test")).unwrap();
+    assert!(summary.current_account_found);
+    assert_eq!(summary.account_folders, 2);
+    assert_eq!(summary.old_account_folders, 1);
+    assert_eq!(summary.old_account_files, 2);
+    assert!(
+        catalog
+            .set_old_account_cleanup_planned(Some("missing"), true)
+            .is_err()
+    );
+    catalog
+        .set_old_account_cleanup_planned(Some("test"), true)
+        .unwrap();
+    assert!(catalog.bulk_cleanup_planned("old_account").unwrap());
+    assert_eq!(catalog.bulk_removal_prefixes().unwrap().len(), 1);
+
+    let output = temporary
+        .path()
+        .join("LINE-current-account-only.imazingapp");
+    let candidate = build_candidate(&source, &output, &catalog, true, false, |_| Ok(())).unwrap();
+    assert_eq!(candidate.removed_entries, summary.old_account_files);
+    let archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    assert!(
+        archive
+            .file_names()
+            .all(|name| !name.contains("/PrivateStore/P_old/"))
+    );
+    assert!(
+        archive
+            .file_names()
+            .any(|name| name == report.database_path)
+    );
+    assert!(old_account.join("Messages/Line.sqlite").is_file());
 }
 
 #[test]

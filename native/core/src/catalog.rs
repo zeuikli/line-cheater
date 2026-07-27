@@ -128,6 +128,21 @@ pub struct DatabaseCleanupPlan {
     pub orphan_messages: Vec<PlannedMessage>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OldAccountSummary {
+    pub current_account_found: bool,
+    pub account_folders: u64,
+    pub old_account_folders: u64,
+    pub old_account_files: u64,
+    pub old_account_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BulkRemovalSummary {
+    pub files: u64,
+    pub bytes: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DuplicateLinkMember {
     pub path: String,
@@ -239,6 +254,34 @@ impl Catalog {
             );
             CREATE INDEX IF NOT EXISTS cleanup_activity_recent
                 ON cleanup_activity(created_at DESC, id DESC);
+            CREATE TABLE IF NOT EXISTS bulk_removal_plan (
+                reason TEXT NOT NULL CHECK(reason IN ('community', 'old_account')),
+                path TEXT NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+                marked_at INTEGER NOT NULL,
+                PRIMARY KEY(reason, path)
+            );
+            CREATE INDEX IF NOT EXISTS bulk_removal_reason
+                ON bulk_removal_plan(reason, path);
+            CREATE TABLE IF NOT EXISTS bulk_cleanup_plan (
+                reason TEXT PRIMARY KEY CHECK(reason IN ('community', 'old_account')),
+                chat_count INTEGER NOT NULL DEFAULT 0,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                marked_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bulk_removal_scope (
+                reason TEXT NOT NULL CHECK(reason = 'old_account'),
+                path_prefix TEXT NOT NULL,
+                marked_at INTEGER NOT NULL,
+                PRIMARY KEY(reason, path_prefix)
+            );
+            CREATE TABLE IF NOT EXISTS all_chat_attachment_plan (
+                path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE,
+                marked_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS cleanup_scope_plan (
+                scope TEXT PRIMARY KEY CHECK(scope = 'all_chat_attachments'),
+                marked_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS chats (
                 source TEXT NOT NULL CHECK(source IN ('line', 'square')),
                 chat_pk INTEGER NOT NULL,
@@ -256,10 +299,15 @@ impl Catalog {
             CREATE INDEX IF NOT EXISTS chats_page
                 ON chats(last_updated DESC, source ASC, chat_pk ASC)
                 WHERE message_count > 0;
-            CREATE VIEW IF NOT EXISTS all_removal_plan AS
+            DROP VIEW IF EXISTS all_removal_plan;
+            CREATE VIEW all_removal_plan AS
                 SELECT path FROM removal_plan
                 UNION
-                SELECT path FROM chat_removal_files;
+                SELECT path FROM chat_removal_files
+                UNION
+                SELECT path FROM all_chat_attachment_plan
+                UNION
+                SELECT path FROM bulk_removal_plan;
             ",
         )?;
         ensure_column(&connection, "files", "sha256", "TEXT")?;
@@ -297,6 +345,30 @@ impl Catalog {
                 FROM (SELECT DISTINCT path FROM chat_removal_files) chat_files
                 WHERE NOT EXISTS (
                     SELECT 1 FROM removal_plan direct WHERE direct.path = chat_files.path
+                )
+                UNION ALL
+                SELECT all_chat.path, 'chat'
+                FROM all_chat_attachment_plan all_chat
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM removal_plan direct WHERE direct.path = all_chat.path
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM chat_removal_files chat_files
+                    WHERE chat_files.path = all_chat.path
+                )
+                UNION ALL
+                SELECT bulk.path, bulk.reason
+                FROM bulk_removal_plan bulk
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM removal_plan direct WHERE direct.path = bulk.path
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM chat_removal_files chat_files
+                    WHERE chat_files.path = bulk.path
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM all_chat_attachment_plan all_chat
+                    WHERE all_chat.path = bulk.path
                 );
             ",
         )?;
@@ -493,6 +565,22 @@ impl Catalog {
         let mut statement = self
             .connection
             .prepare("SELECT path FROM all_removal_plan ORDER BY path")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+    }
+
+    pub fn bulk_removal_paths(&self) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT path FROM bulk_removal_plan ORDER BY path")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+    }
+
+    pub fn bulk_removal_prefixes(&self) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT path_prefix FROM bulk_removal_scope ORDER BY path_prefix")?;
         let rows = statement.query_map([], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
     }
@@ -759,8 +847,9 @@ impl Catalog {
             [path],
             |row| row.get(0),
         )?;
+        let transaction = self.connection.unchecked_transaction()?;
         if marked {
-            self.connection.execute(
+            transaction.execute(
                 "INSERT INTO removal_plan(path, marked_at, reason) VALUES (?1, ?2, 'manual')
                  ON CONFLICT(path) DO UPDATE SET
                     marked_at = excluded.marked_at,
@@ -768,20 +857,34 @@ impl Catalog {
                 params![path, unix_seconds()],
             )?;
         } else {
-            self.connection
-                .execute("DELETE FROM removal_plan WHERE path = ?1", [path])?;
+            transaction.execute("DELETE FROM removal_plan WHERE path = ?1", [path])?;
         }
-        self.record_cleanup_activity(
-            if marked {
-                "mark_attachment"
-            } else {
-                "unmark_attachment"
-            },
-            "attachment",
-            path,
-            1,
-            bytes.max(0) as u64,
+        transaction.execute(
+            "INSERT INTO cleanup_activity(
+                action, scope, detail, file_count, bytes, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                if marked {
+                    "mark_attachment"
+                } else {
+                    "unmark_attachment"
+                },
+                "attachment",
+                path,
+                1,
+                bytes.max(0),
+                unix_seconds(),
+            ],
         )?;
+        transaction.execute(
+            "DELETE FROM cleanup_activity
+             WHERE id < COALESCE(
+                 (SELECT id FROM cleanup_activity ORDER BY id DESC LIMIT 1 OFFSET 499),
+                 0
+             )",
+            [],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1225,6 +1328,7 @@ impl Catalog {
         self.set_meta("context_index_version", CONTEXT_INDEX_VERSION)?;
         self.set_meta("context_completed_at", &unix_seconds().to_string())?;
         self.refresh_chat_removal_files()?;
+        self.refresh_all_chat_attachment_plan()?;
         on_progress(progress);
         Ok(progress)
     }
@@ -1417,6 +1521,9 @@ impl Catalog {
         if !matches!(reason, "selected" | "empty" | "system_only") {
             bail!("invalid chat cleanup reason");
         }
+        if planned && chat.source == "square" && self.bulk_cleanup_planned("community")? {
+            bail!("all community data is already included in the cleanup plan");
+        }
         let transaction = self.connection.unchecked_transaction()?;
         if planned {
             transaction.execute(
@@ -1502,6 +1609,321 @@ impl Catalog {
         Ok(())
     }
 
+    pub fn set_community_cleanup_planned(
+        &self,
+        chats: &[Chat],
+        message_count: u64,
+        database_entry: &str,
+        planned: bool,
+    ) -> Result<()> {
+        if database_entry.is_empty()
+            || database_entry.starts_with('/')
+            || database_entry.contains('\\')
+            || !database_entry.ends_with("/Messages/LineSquare.sqlite")
+        {
+            bail!("invalid LineSquare.sqlite source path");
+        }
+        if chats.iter().any(|chat| chat.source != "square") {
+            bail!("community cleanup received a non-community chat");
+        }
+        let cleanup_paths = self.community_cleanup_paths(chats, database_entry)?;
+        let cleanup_file_count = cleanup_paths.len() as u64;
+        let cleanup_bytes = cleanup_paths
+            .iter()
+            .map(|(_, bytes)| *bytes)
+            .fold(0_u64, u64::saturating_add);
+        if planned && !cleanup_paths.iter().any(|(path, _)| path == database_entry) {
+            bail!("LineSquare.sqlite is missing from the attachment catalog");
+        }
+        let chat_count = i64::try_from(chats.len()).context("too many community chats")?;
+        let message_count = i64::try_from(message_count).context("too many community messages")?;
+        let transaction = self.connection.unchecked_transaction()?;
+        if planned {
+            transaction.execute("DELETE FROM chat_removal_files WHERE source = 'square'", [])?;
+            transaction.execute("DELETE FROM chat_removal_plan WHERE source = 'square'", [])?;
+            transaction.execute("DELETE FROM orphan_message_removal_plan", [])?;
+            transaction.execute(
+                "
+                INSERT INTO bulk_cleanup_plan(
+                    reason, chat_count, message_count, marked_at
+                ) VALUES ('community', ?1, ?2, ?3)
+                ON CONFLICT(reason) DO UPDATE SET
+                    chat_count = excluded.chat_count,
+                    message_count = excluded.message_count,
+                    marked_at = excluded.marked_at
+                ",
+                params![chat_count, message_count, unix_seconds()],
+            )?;
+            {
+                let mut insert = transaction.prepare(
+                    "
+                    INSERT OR IGNORE INTO bulk_removal_plan(reason, path, marked_at)
+                    VALUES ('community', ?1, ?2)
+                    ",
+                )?;
+                for (path, _) in cleanup_paths {
+                    insert.execute(params![path, unix_seconds()])?;
+                }
+            }
+        } else {
+            transaction.execute(
+                "DELETE FROM bulk_removal_plan WHERE reason = 'community'",
+                [],
+            )?;
+            transaction.execute(
+                "DELETE FROM bulk_cleanup_plan WHERE reason = 'community'",
+                [],
+            )?;
+        }
+        transaction.commit()?;
+        self.record_cleanup_activity(
+            if planned {
+                "plan_community_cleanup"
+            } else {
+                "clear_community_cleanup"
+            },
+            "bulk_plan",
+            "community",
+            if planned { cleanup_file_count } else { 0 },
+            if planned { cleanup_bytes } else { 0 },
+        )?;
+        Ok(())
+    }
+
+    pub fn community_cleanup_summary(
+        &self,
+        chats: &[Chat],
+        database_entry: &str,
+    ) -> Result<BulkRemovalSummary> {
+        let paths = self.community_cleanup_paths(chats, database_entry)?;
+        Ok(BulkRemovalSummary {
+            files: paths.len() as u64,
+            bytes: paths
+                .iter()
+                .map(|(_, bytes)| *bytes)
+                .fold(0_u64, u64::saturating_add),
+        })
+    }
+
+    fn community_cleanup_paths(
+        &self,
+        chats: &[Chat],
+        database_entry: &str,
+    ) -> Result<Vec<(String, u64)>> {
+        let mut paths = HashMap::new();
+        let database_paths = [
+            database_entry.to_string(),
+            format!("{database_entry}-wal"),
+            format!("{database_entry}-shm"),
+        ];
+        {
+            let mut statement = self.connection.prepare(
+                "
+                SELECT path, bytes
+                FROM files
+                WHERE path IN (?1, ?2, ?3)
+                   OR (attachment_kind IS NOT NULL AND context_source = 'square')
+                ",
+            )?;
+            let rows = statement.query_map(
+                params![database_paths[0], database_paths[1], database_paths[2]],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )?;
+            for row in rows {
+                let (path, bytes) = row?;
+                paths.insert(path, bytes.max(0) as u64);
+            }
+        }
+        {
+            let mut statement = self.connection.prepare(
+                "
+                SELECT path, bytes
+                FROM files
+                WHERE attachment_kind IS NOT NULL
+                  AND ?1 <> ''
+                  AND LOWER(chat_hint) = LOWER(?1)
+                ",
+            )?;
+            for chat in chats {
+                let rows = statement.query_map([&chat.id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?;
+                for row in rows {
+                    let (path, bytes) = row?;
+                    paths.insert(path, bytes.max(0) as u64);
+                }
+            }
+        }
+        let mut paths = paths.into_iter().collect::<Vec<_>>();
+        paths.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(paths)
+    }
+
+    pub fn old_account_summary(
+        &self,
+        current_account_id: Option<&str>,
+    ) -> Result<OldAccountSummary> {
+        let mut account_prefixes = HashSet::new();
+        let mut old_account_prefixes = HashSet::new();
+        let mut current_account_found = false;
+        let mut old_account_files = 0_u64;
+        let mut old_account_bytes = 0_u64;
+        let mut statement = self
+            .connection
+            .prepare("SELECT path, bytes FROM files ORDER BY path")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let bytes: i64 = row.get(1)?;
+            let Some((account_id, prefix)) = private_store_account_from_path(&path) else {
+                continue;
+            };
+            account_prefixes.insert(prefix.clone());
+            if current_account_id == Some(account_id) {
+                current_account_found = true;
+            } else if current_account_id.is_some() {
+                old_account_prefixes.insert(prefix);
+                old_account_files = old_account_files.saturating_add(1);
+                old_account_bytes = old_account_bytes.saturating_add(bytes.max(0) as u64);
+            }
+        }
+        let old_account_folders = if current_account_found {
+            old_account_prefixes.len() as u64
+        } else {
+            0
+        };
+        Ok(OldAccountSummary {
+            current_account_found,
+            account_folders: account_prefixes.len() as u64,
+            old_account_folders,
+            old_account_files,
+            old_account_bytes,
+        })
+    }
+
+    pub fn set_old_account_cleanup_planned(
+        &self,
+        current_account_id: Option<&str>,
+        planned: bool,
+    ) -> Result<()> {
+        let current_account_id =
+            current_account_id.context("cannot identify the current LINE account")?;
+        let summary = self.old_account_summary(Some(current_account_id))?;
+        if !summary.current_account_found {
+            bail!("the verified current LINE account folder is missing from the catalog");
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "DELETE FROM bulk_removal_plan WHERE reason = 'old_account'",
+            [],
+        )?;
+        transaction.execute(
+            "DELETE FROM bulk_removal_scope WHERE reason = 'old_account'",
+            [],
+        )?;
+        transaction.execute(
+            "DELETE FROM bulk_cleanup_plan WHERE reason = 'old_account'",
+            [],
+        )?;
+        if planned {
+            let mut files = Vec::new();
+            {
+                let mut statement = transaction.prepare("SELECT path FROM files ORDER BY path")?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+                for row in rows {
+                    let path = row?;
+                    let Some((account_id, prefix)) = private_store_account_from_path(&path) else {
+                        continue;
+                    };
+                    if account_id != current_account_id {
+                        files.push((path, prefix.to_string()));
+                    }
+                }
+            }
+            let mut prefixes = HashSet::new();
+            {
+                let mut insert_file = transaction.prepare(
+                    "
+                    INSERT OR IGNORE INTO bulk_removal_plan(reason, path, marked_at)
+                    VALUES ('old_account', ?1, ?2)
+                    ",
+                )?;
+                for (path, prefix) in files {
+                    insert_file.execute(params![path, unix_seconds()])?;
+                    prefixes.insert(prefix);
+                }
+            }
+            {
+                let mut insert_scope = transaction.prepare(
+                    "
+                    INSERT OR IGNORE INTO bulk_removal_scope(reason, path_prefix, marked_at)
+                    VALUES ('old_account', ?1, ?2)
+                    ",
+                )?;
+                let has_old_accounts = !prefixes.is_empty();
+                for prefix in prefixes {
+                    insert_scope.execute(params![prefix, unix_seconds()])?;
+                }
+                if has_old_accounts {
+                    transaction.execute(
+                        "
+                        INSERT INTO bulk_cleanup_plan(
+                            reason, chat_count, message_count, marked_at
+                        ) VALUES ('old_account', 0, 0, ?1)
+                        ",
+                        [unix_seconds()],
+                    )?;
+                }
+            }
+        }
+        transaction.commit()?;
+        self.record_cleanup_activity(
+            if planned {
+                "plan_old_account_cleanup"
+            } else {
+                "clear_old_account_cleanup"
+            },
+            "bulk_plan",
+            "old_account",
+            if planned {
+                summary.old_account_files
+            } else {
+                0
+            },
+            if planned {
+                summary.old_account_bytes
+            } else {
+                0
+            },
+        )?;
+        Ok(())
+    }
+
+    pub fn bulk_cleanup_planned(&self, reason: &str) -> Result<bool> {
+        if !matches!(reason, "community" | "old_account") {
+            bail!("unsupported bulk cleanup reason");
+        }
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM bulk_cleanup_plan WHERE reason = ?1)",
+                [reason],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    pub fn bulk_cleanup_counts(&self) -> Result<(u64, u64)> {
+        let (chats, messages): (i64, i64) = self.connection.query_row(
+            "
+            SELECT COALESCE(SUM(chat_count), 0), COALESCE(SUM(message_count), 0)
+            FROM bulk_cleanup_plan
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((chats.max(0) as u64, messages.max(0) as u64))
+    }
+
     pub fn plan_automatic_cleanup(
         &self,
         chats: &[Chat],
@@ -1518,7 +1940,11 @@ impl Catalog {
             )?;
             return Ok(());
         }
+        let community_cleanup_planned = self.bulk_cleanup_planned("community")?;
         for chat in chats {
+            if community_cleanup_planned && chat.source == "square" {
+                continue;
+            }
             let reason = if chat.message_count == 0 {
                 "empty"
             } else {
@@ -1539,7 +1965,10 @@ impl Catalog {
                     marked_at = excluded.marked_at
                 ",
             )?;
-            for message in orphan_messages {
+            for message in orphan_messages
+                .iter()
+                .filter(|_| !community_cleanup_planned)
+            {
                 insert.execute(params![
                     message.pk,
                     message.id,
@@ -1602,6 +2031,9 @@ impl Catalog {
         transaction.execute("DELETE FROM chat_removal_files", [])?;
         transaction.execute("DELETE FROM chat_removal_plan", [])?;
         transaction.execute("DELETE FROM orphan_message_removal_plan", [])?;
+        transaction.execute("DELETE FROM bulk_removal_plan", [])?;
+        transaction.execute("DELETE FROM bulk_removal_scope", [])?;
+        transaction.execute("DELETE FROM bulk_cleanup_plan", [])?;
         transaction.commit()?;
         self.record_cleanup_activity("clear_advanced_plan", "database_plan", "all", 0, 0)?;
         Ok(())
@@ -1613,8 +2045,19 @@ impl Catalog {
         transaction.execute("DELETE FROM chat_removal_files", [])?;
         transaction.execute("DELETE FROM chat_removal_plan", [])?;
         transaction.execute("DELETE FROM orphan_message_removal_plan", [])?;
+        transaction.execute("DELETE FROM bulk_removal_plan", [])?;
+        transaction.execute("DELETE FROM bulk_removal_scope", [])?;
+        transaction.execute("DELETE FROM bulk_cleanup_plan", [])?;
+        transaction.execute("DELETE FROM all_chat_attachment_plan", [])?;
+        transaction.execute("DELETE FROM cleanup_scope_plan", [])?;
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn clear_all_user_removal_plans(&self) -> Result<CleanupOverview> {
+        self.clear_all_removal_plans()?;
+        self.record_cleanup_activity("clear_all_plans", "cleanup_plan", "user_reset", 0, 0)?;
+        self.cleanup_overview()
     }
 
     pub fn database_cleanup_plan(&self) -> Result<DatabaseCleanupPlan> {
@@ -1655,11 +2098,18 @@ impl Catalog {
         line_empty_chats: u64,
         line_system_only_chats: u64,
         square_available: bool,
+        community_chats: u64,
+        community_messages: u64,
+        community_cleanup: BulkRemovalSummary,
         square_empty_chats: u64,
         square_system_only_chats: u64,
         orphan_community_messages: u64,
+        current_account_detected: bool,
+        old_accounts: OldAccountSummary,
     ) -> Result<AdvancedCleanupReport> {
         let automatic_cleanup_planned = self.automatic_cleanup_planned()?;
+        let community_cleanup_planned = self.bulk_cleanup_planned("community")?;
+        let old_account_cleanup_planned = self.bulk_cleanup_planned("old_account")?;
         let (planned_chats, planned_chat_messages): (i64, i64) = self.connection.query_row(
             "SELECT COUNT(*), COALESCE(SUM(message_count), 0)
                  FROM chat_removal_plan",
@@ -1682,14 +2132,36 @@ impl Catalog {
             line_empty_chats,
             line_system_only_chats,
             square_available,
+            community_chats,
+            community_messages,
+            community_files: community_cleanup.files,
+            community_bytes: community_cleanup.bytes,
+            community_cleanup_planned,
             square_empty_chats,
             square_system_only_chats,
             orphan_community_messages,
+            current_account_detected,
+            account_folders: old_accounts.account_folders,
+            old_account_folders: old_accounts.old_account_folders,
+            old_account_files: old_accounts.old_account_files,
+            old_account_bytes: old_accounts.old_account_bytes,
+            old_account_cleanup_planned,
             automatic_cleanup_planned,
-            planned_chats: planned_chats.max(0) as u64,
-            planned_database_messages: planned_chat_messages
+            planned_chats: (planned_chats.max(0) as u64).saturating_add(
+                if community_cleanup_planned {
+                    community_chats
+                } else {
+                    0
+                },
+            ),
+            planned_database_messages: (planned_chat_messages
                 .saturating_add(planned_orphan_messages)
-                .max(0) as u64,
+                .max(0) as u64)
+                .saturating_add(if community_cleanup_planned {
+                    community_messages
+                } else {
+                    0
+                }),
             planned_files: planned_files.max(0) as u64,
             planned_bytes: planned_bytes.max(0) as u64,
         })
@@ -1728,6 +2200,91 @@ impl Catalog {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    fn refresh_all_chat_attachment_plan(&self) -> Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM all_chat_attachment_plan", [])?;
+        let planned: bool = transaction.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM cleanup_scope_plan
+                WHERE scope = 'all_chat_attachments'
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        if planned {
+            transaction.execute(
+                "
+                INSERT INTO all_chat_attachment_plan(path, marked_at)
+                SELECT f.path, ?1
+                FROM files f
+                WHERE f.attachment_kind IS NOT NULL
+                  AND f.reference_status = 'referenced'
+                  AND f.context_source IN ('line', 'square')
+                  AND f.message_chat_pk IS NOT NULL
+                ",
+                [unix_seconds()],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_all_chat_attachments_planned(&self, planned: bool) -> Result<CleanupOverview> {
+        if planned
+            && (self.meta("context_index_version")?.as_deref() != Some(CONTEXT_INDEX_VERSION)
+                || self.meta("context_status")?.as_deref() != Some("complete"))
+        {
+            bail!("請先重新掃描附件，再全選所有聊天室附件");
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM all_chat_attachment_plan", [])?;
+        transaction.execute(
+            "DELETE FROM cleanup_scope_plan WHERE scope = 'all_chat_attachments'",
+            [],
+        )?;
+        if planned {
+            let now = unix_seconds();
+            transaction.execute(
+                "INSERT INTO cleanup_scope_plan(scope, marked_at)
+                 VALUES ('all_chat_attachments', ?1)",
+                [now],
+            )?;
+            transaction.execute(
+                "
+                INSERT INTO all_chat_attachment_plan(path, marked_at)
+                SELECT f.path, ?1
+                FROM files f
+                WHERE f.attachment_kind IS NOT NULL
+                  AND f.reference_status = 'referenced'
+                  AND f.context_source IN ('line', 'square')
+                  AND f.message_chat_pk IS NOT NULL
+                ",
+                [now],
+            )?;
+        }
+        transaction.commit()?;
+        let overview = self.cleanup_overview()?;
+        let (file_count, bytes): (i64, i64) = self.connection.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(f.bytes), 0)
+             FROM all_chat_attachment_plan planned
+             JOIN files f ON f.path = planned.path",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        self.record_cleanup_activity(
+            if planned {
+                "plan_all_chat_attachments"
+            } else {
+                "clear_all_chat_attachments"
+            },
+            "attachment_plan",
+            "all_chat_attachments",
+            u64::try_from(file_count.max(0)).unwrap_or(0),
+            u64::try_from(bytes.max(0)).unwrap_or(0),
+        )?;
+        Ok(overview)
     }
 
     pub fn cleanup_overview(&self) -> Result<CleanupOverview> {
@@ -1825,6 +2382,14 @@ impl Catalog {
         .into_iter()
         .map(|category| totals.remove(category).expect("cleanup total exists"))
         .collect();
+        let all_chat_attachments_planned: bool = self.connection.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM cleanup_scope_plan
+                WHERE scope = 'all_chat_attachments'
+            )",
+            [],
+            |row| row.get(0),
+        )?;
         Ok(CleanupOverview {
             categories,
             marked_count: marked_count.max(0) as u64,
@@ -1843,6 +2408,7 @@ impl Catalog {
             } else {
                 "stale".to_string()
             },
+            all_chat_attachments_planned,
         })
     }
 
@@ -3122,6 +3688,24 @@ fn update_progress(progress: &mut CatalogScanProgress, record: &FileRecord) {
     if record.kind.is_some() {
         progress.attachments += 1;
     }
+}
+
+fn private_store_account_from_path(path: &str) -> Option<(&str, String)> {
+    if path.contains('\\') {
+        return None;
+    }
+    let segments = path.split('/').collect::<Vec<_>>();
+    for index in 0..segments.len().saturating_sub(1) {
+        if segments[index] != "PrivateStore" {
+            continue;
+        }
+        let account_id = segments[index + 1].strip_prefix("P_")?;
+        if account_id.is_empty() {
+            return None;
+        }
+        return Some((account_id, segments[..=index + 1].join("/")));
+    }
+    None
 }
 
 fn file_record(path: String, bytes: u64, modified_ns: i64, content_sha256: String) -> FileRecord {
