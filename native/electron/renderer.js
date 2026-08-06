@@ -2716,18 +2716,22 @@ function renderCleanupGroup(group) {
   }
   if (canOpen) {
     const toggleAll = document.createElement("button");
-    const fullyMarked = group.fileCount > 0 && group.markedCount === group.fileCount;
+    const deletingAllAttachments = Boolean(group.deletingAllAttachments);
     toggleAll.type = "button";
-    toggleAll.className = `cleanup-group-action ${fullyMarked ? "is-cancel" : "is-delete"}`;
+    toggleAll.className =
+      `cleanup-group-action ${deletingAllAttachments ? "is-cancel" : "is-delete"}`;
     toggleAll.dataset.groupAction = "toggle_all";
     toggleAll.dataset.groupKey = group.key;
+    toggleAll.dataset.deletingAllAttachments = String(deletingAllAttachments);
+    toggleAll.dataset.keepingThumbnails = String(Boolean(group.keepingThumbnails));
+    toggleAll.dataset.chatTitle = group.chatTitle;
     toggleAll.disabled = Boolean(group.plannedForChatRemoval);
     toggleAll.title = group.plannedForChatRemoval
       ? "附件會隨聊天室一起刪除；請先取消聊天室清理計畫"
       : "";
     toggleAll.textContent = group.plannedForChatRemoval
       ? "隨聊天室刪除"
-      : fullyMarked ? "取消刪除所有附件" : "刪除所有附件";
+      : deletingAllAttachments ? "取消刪除所有附件" : "刪除所有附件";
     actions.append(toggleAll);
   }
   if (canOpen && group.thumbnailBackedImageCount > 0) {
@@ -3378,6 +3382,21 @@ async function changeAttachmentMark(checkbox) {
 }
 
 async function applyGroupAction(groupKey, action, button) {
+  if (action === "toggle_all") {
+    const cancelling = button.dataset.deletingAllAttachments === "true";
+    const keepingThumbnails = button.dataset.keepingThumbnails === "true";
+    const chatTitle = button.dataset.chatTitle || "這個聊天室";
+    if (!await requestConfirmation({
+      title: cancelling ? `取消刪除「${chatTitle}」的所有附件？` : `刪除「${chatTitle}」的所有附件？`,
+      message: cancelling
+        ? "要取消這個聊天室目前的所有附件刪除設定嗎？\n\n若同時啟用只保留縮圖，圖片原檔的刪除設定仍會保留。"
+        : keepingThumbnails
+          ? "這會刪除圖片原圖、影片、PDF、語音及其他附件；因為已啟用「只保留縮圖」，可配對的非空縮圖會優先保留。原始備份不會被修改。"
+          : "警告：這會刪除所有圖片原圖及縮圖，也包含影片、PDF、語音與其他附件。刪除縮圖後，聊天紀錄可能不再顯示圖片預覽；原始備份不會被修改。",
+      confirmLabel: cancelling ? "取消刪除所有附件" : "確認刪除所有附件",
+      danger: !cancelling
+    })) return;
+  }
   const originalText = button.textContent;
   button.disabled = true;
   button.textContent = "套用中…";
@@ -3416,7 +3435,9 @@ async function applyCategoryKeepThumbnails() {
       ? `要批量取消${label}目前的只保留縮圖設定嗎？\n\n` +
         "只會清除這個分類內相關圖片原檔的手動標記；安全自動標記及聊天室刪除計畫會保留。"
       : `要一次將${label}設定為只保留縮圖嗎？\n\n` +
-        "只會標記具有已辨識、非空縮圖的圖片原檔；縮圖、PDF、影片、無縮圖及無法確認的附件都會保留。已整個排入清理的聊天室不會變更。",
+        (cleanupCategoryActionState?.deletingAllAttachments
+          ? "目前已啟用刪除所有附件；套用後會優先保留可配對的非空縮圖，其餘原圖、影片、PDF、語音與其他附件仍會刪除。"
+          : "只會標記具有已辨識、非空縮圖的圖片原檔；縮圖、PDF、影片、無縮圖及無法確認的附件都會保留。已整個排入清理的聊天室不會變更。"),
     confirmLabel: cancelling ? "取消全部只保留縮圖" : "全部只保留縮圖",
     danger: !cancelling
   })) return;
@@ -3473,10 +3494,14 @@ async function deleteCategoryAttachments() {
     title: cancelling ? `取消刪除${label}的所有附件？` : `刪除${label}的所有附件？`,
     message: cancelling
       ? `要批量取消${label}目前的所有手動附件刪除標記嗎？\n\n` +
-        "安全自動標記及聊天室刪除計畫會保留。"
+        (cleanupCategoryActionState?.keepingAllThumbnails
+          ? "「只保留縮圖」仍會維持啟用，因此具有配對縮圖的圖片原檔仍會刪除；安全自動標記及聊天室刪除計畫也會保留。"
+          : "安全自動標記及聊天室刪除計畫會保留。")
       : `要將${label}內的所有附件加入清理計畫嗎？\n\n` +
-        "這會包含原圖、縮圖、影片、PDF 與其他附件，且不受上方附件類型篩選影響；原始備份不會被修改。",
-    confirmLabel: cancelling ? "取消刪除所有附件" : "刪除所有附件",
+        (cleanupCategoryActionState?.keepingAllThumbnails
+          ? "這會刪除圖片原圖、影片、PDF、語音及其他附件；目前已啟用「只保留縮圖」，所以可配對的非空縮圖會優先保留。此操作不受上方附件類型篩選影響，原始備份不會被修改。"
+          : "警告：這會刪除所有圖片原圖及縮圖，也包含影片、PDF、語音與其他附件，且不受上方附件類型篩選影響。刪除縮圖後，聊天紀錄可能不再顯示圖片預覽；原始備份不會被修改。"),
+    confirmLabel: cancelling ? "取消刪除所有附件" : "確認刪除所有附件",
     danger: !cancelling
   })) return;
   try {

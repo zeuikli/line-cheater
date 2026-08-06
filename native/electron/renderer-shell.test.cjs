@@ -366,6 +366,10 @@ test("supports reversible category-wide actions with locked mutation progress", 
   assert.match(renderer, /取消全部只保留縮圖/);
   assert.match(renderer, /取消刪除分類所有附件/);
   assert.match(renderer, /取消刪除分類所有聊天室/);
+  assert.match(renderer, /所有圖片原圖及縮圖/);
+  assert.match(renderer, /影片、PDF、語音與其他附件/);
+  assert.match(renderer, /可配對的非空縮圖會優先保留/);
+  assert.match(renderer, /dataset\.deletingAllAttachments/);
   assert.match(renderer, /\["all", "individual", "group", "community"\]\.includes\(category\)/);
   assert.match(renderer, /runCleanupMutation\(/);
   assert.match(renderer, /bridge\.on\("cleanupMutationProgress"/);

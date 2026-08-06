@@ -380,6 +380,7 @@ pub struct CleanupGroup {
     pub has_thumbnail: bool,
     pub thumbnail_backed_image_count: u64,
     pub keeping_thumbnails: bool,
+    pub deleting_all_attachments: bool,
     pub latest_timestamp: i64,
     pub planned_for_chat_removal: bool,
 }

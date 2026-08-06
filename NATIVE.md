@@ -731,6 +731,9 @@ It contains:
   chat path hint, persisted SQLite evidence/reference status, scan generation,
   and an optional exact-content SHA-256.
 - `removal_plan`: explicit user selections only.
+- `cleanup_bulk_action`: persistent delete-all intent for category and group
+  controls, kept separate from the resulting file marks so delete-all and
+  keep-thumbnail can remain independently reversible.
 - `chat_removal_plan` and `chat_removal_files`: source-aware chat/database
   deletion selections and their derived attachment paths, including exact
   database references and files whose path identifies the selected chat.
@@ -820,8 +823,10 @@ generated fixture tests:
   size therefore does not determine renderer DOM size.
 - Original attachments sort before thumbnails within a bundle and retain
   independent removal checkboxes.
-- `toggle_all` marks every file unless the group is already fully marked, in
-  which case it clears every mark.
+- `toggle_all` normally marks every file and requires a destructive-action
+  confirmation. If `keep_thumbnail` is also active, matching non-empty image
+  thumbnails stay unmarked while all other attachments are marked. Cancelling
+  either action preserves the other action's result.
 - `keep_thumbnail` only marks SQLite-confirmed image originals with a non-empty
   thumbnail for the same message ID and path chat. PDFs, videos, missing or
   empty thumbnails, and unconfirmed media remain untouched. Matching thumbnail
@@ -830,7 +835,10 @@ generated fixture tests:
   to `all`, `individual`, `group`, and `community`; they skip chats already
   planned for deletion. Category-wide `delete_all` and `clear_delete_all` also
   support `unreferenced` and `unconfirmed`, clear only manual attachment marks
-  when cancelled, and preserve automatic or chat-derived plans.
+  when cancelled, and preserve automatic or chat-derived plans. Delete-all
+  includes original images, thumbnails, videos, PDFs, audio, and other
+  attachments, but matching non-empty image thumbnails are protected whenever
+  keep-thumbnail is active in the same scope.
 - Category-wide chat deletion is limited to `all`, `individual`, `group`, and
   `community`, uses the current catalog chat index when available, selects
   chats once, scans attachments once, and commits the resulting chat and file
