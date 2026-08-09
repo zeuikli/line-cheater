@@ -95,6 +95,13 @@ grouped below rather than treated as separate feature changes.
   content digests, and commits a new output directory only after all files are
   complete. Image-only mode detects common image signatures and reports skipped
   files; originals and thumbnails can be selected independently.
+- Exported files are named `YYYY-MM-DD_HHMMSS_<original name>` and stamped with
+  the message's send time (modified/accessed everywhere, plus creation date on
+  macOS and Windows), so Finder sorts an export chronologically by name or by
+  date. The renderer sends its UTC offset in `timezoneOffsetMinutes` so the
+  prefix matches the local send day. Attachments without a linked message fall
+  back to the cataloged file mtime; timestamps outside 2001-2100 are treated as
+  unknown and the original name is used unchanged.
 - Export destinations are selected through a one-use Electron token. The main
   process resolves the token to a user-chosen directory, creates a unique
   `LINE-Cheater-Export-*` child, rejects the private session directory, and
@@ -272,6 +279,8 @@ Verified implementation:
   skips non-image files, basename collisions receive deterministic suffixes,
   and progress reports processed files/bytes without sending file contents over
   JSON. Direct `Line.sqlite` export is rejected.
+- [x] Name exported files with a sortable send-date prefix and stamp their
+  created/modified dates with the message send time.
 - [x] Match the web chat-name evidence order with `ZUSER`, `LineSquare.sqlite`,
   `UnifiedGroup.sqlite`, `ZGROUP`, and inferred rename-message fallbacks. Chats
   with at least one stored message are shown like the web implementation;

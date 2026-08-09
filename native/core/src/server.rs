@@ -303,6 +303,8 @@ struct ExportAttachmentsParams {
     images_only: bool,
     #[serde(default)]
     include_thumbnails: bool,
+    #[serde(default)]
+    timezone_offset_minutes: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -815,6 +817,7 @@ fn handle_request<W: Write>(
                 ExportOptions {
                     images_only: params.images_only,
                     include_thumbnails: params.include_thumbnails,
+                    timezone_offset_minutes: params.timezone_offset_minutes.clamp(-840, 840),
                 },
                 |progress| {
                     let _ = write_export_progress(

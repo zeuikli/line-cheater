@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Write};
+#[cfg(target_vendor = "apple")]
+use std::os::macos::fs::FileTimesExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
@@ -158,6 +160,9 @@ pub enum ExportScope<'a> {
 pub struct ExportOptions {
     pub images_only: bool,
     pub include_thumbnails: bool,
+    /// Minutes east of UTC used when naming exported files, so the date prefix
+    /// matches the day the message was sent in the viewer's own time zone.
+    pub timezone_offset_minutes: i32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,6 +184,20 @@ struct ExportItem {
     modified_ns: i64,
     kind: AttachmentKind,
     content_sha256: Option<String>,
+    message_timestamp: Option<i64>,
+}
+
+impl ExportItem {
+    /// Milliseconds since the epoch for the moment the attachment was sent,
+    /// falling back to the file's own modification time.
+    fn sent_ms(&self) -> Option<i64> {
+        self.message_timestamp
+            .filter(|value| is_plausible_export_ms(*value))
+            .or_else(|| {
+                let fallback = self.modified_ns / 1_000_000;
+                is_plausible_export_ms(fallback).then_some(fallback)
+            })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1295,7 +1314,7 @@ impl Catalog {
                         source.path,
                         &item,
                         output,
-                        options.images_only,
+                        options,
                         accumulator,
                         on_progress,
                     )?;
@@ -1314,7 +1333,7 @@ impl Catalog {
                         &mut entry,
                         &item,
                         output,
-                        options.images_only,
+                        options,
                         accumulator,
                         on_progress,
                     )?;
@@ -1346,7 +1365,7 @@ impl Catalog {
             "attachment_kind = 'original'"
         };
         let mut statement = self.connection.prepare(&format!(
-            "SELECT path, bytes, modified_ns, attachment_kind, content_sha256
+            "SELECT path, bytes, modified_ns, attachment_kind, content_sha256, message_timestamp
              FROM files
              WHERE {attachment_filter}
                AND reference_status = 'referenced'
@@ -1361,24 +1380,26 @@ impl Catalog {
                 row.get(2)?,
                 row.get::<_, String>(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         })?;
         match source.kind {
             SourceKind::Directory => {
                 for row in rows {
-                    let (path, bytes, modified_ns, kind, content_sha256) = row?;
+                    let (path, bytes, modified_ns, kind, content_sha256, message_timestamp) = row?;
                     let item = ExportItem {
                         path,
                         bytes,
                         modified_ns,
                         kind: kind.parse()?,
                         content_sha256,
+                        message_timestamp,
                     };
                     self.export_directory_item(
                         source.path,
                         &item,
                         output,
-                        options.images_only,
+                        options,
                         accumulator,
                         on_progress,
                     )?;
@@ -1387,13 +1408,14 @@ impl Catalog {
             SourceKind::ImazingArchive => {
                 let mut archive = ZipArchive::new(File::open(source.path)?)?;
                 for row in rows {
-                    let (path, bytes, modified_ns, kind, content_sha256) = row?;
+                    let (path, bytes, modified_ns, kind, content_sha256, message_timestamp) = row?;
                     let item = ExportItem {
                         path,
                         bytes,
                         modified_ns,
                         kind: kind.parse()?,
                         content_sha256,
+                        message_timestamp,
                     };
                     let mut entry = archive.by_name(&item.path).with_context(|| {
                         format!("attachment is missing from archive: {}", item.path)
@@ -1405,7 +1427,7 @@ impl Catalog {
                         &mut entry,
                         &item,
                         output,
-                        options.images_only,
+                        options,
                         accumulator,
                         on_progress,
                     )?;
@@ -1417,16 +1439,17 @@ impl Catalog {
     }
 
     fn export_item(&self, path: &str) -> Result<ExportItem> {
-        let (path, bytes, modified_ns, kind, content_sha256): (
+        let (path, bytes, modified_ns, kind, content_sha256, message_timestamp): (
             String,
             i64,
             i64,
             String,
             Option<String>,
+            Option<i64>,
         ) = self
             .connection
             .query_row(
-                "SELECT path, bytes, modified_ns, attachment_kind, content_sha256
+                "SELECT path, bytes, modified_ns, attachment_kind, content_sha256, message_timestamp
                  FROM files
                  WHERE path = ?1 AND attachment_kind IS NOT NULL",
                 [path],
@@ -1437,6 +1460,7 @@ impl Catalog {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )
@@ -1447,6 +1471,7 @@ impl Catalog {
             modified_ns,
             kind: kind.parse()?,
             content_sha256,
+            message_timestamp,
         })
     }
 
@@ -1455,7 +1480,7 @@ impl Catalog {
         source: &Path,
         item: &ExportItem,
         output: &Path,
-        images_only: bool,
+        options: ExportOptions,
         accumulator: &mut ExportAccumulator,
         on_progress: &mut F,
     ) -> Result<()>
@@ -1475,14 +1500,7 @@ impl Catalog {
             bail!("attachment changed since catalog scan: {}", item.path);
         }
         let mut file = File::open(&candidate)?;
-        self.export_reader(
-            &mut file,
-            item,
-            output,
-            images_only,
-            accumulator,
-            on_progress,
-        )?;
+        self.export_reader(&mut file, item, output, options, accumulator, on_progress)?;
         let after = fs::metadata(&candidate)?;
         if after.len() != item.bytes || modified_ns(after.modified().ok()) != item.modified_ns {
             bail!("attachment changed while exporting: {}", item.path);
@@ -1495,7 +1513,7 @@ impl Catalog {
         reader: &mut R,
         item: &ExportItem,
         output: &Path,
-        images_only: bool,
+        options: ExportOptions,
         accumulator: &mut ExportAccumulator,
         on_progress: &mut F,
     ) -> Result<()>
@@ -1515,7 +1533,7 @@ impl Catalog {
             header_len += read;
         }
         let is_image = detect_image_media_type_bytes(&header[..header_len]).is_some();
-        if images_only && !is_image {
+        if options.images_only && !is_image {
             accumulator.progress.processed_files =
                 accumulator.progress.processed_files.saturating_add(1);
             accumulator.progress.processed_bytes = accumulator
@@ -1529,7 +1547,9 @@ impl Catalog {
             return Ok(());
         }
 
-        let destination = unique_export_path(output, &item.path);
+        let sent_ms = item.sent_ms();
+        let destination =
+            unique_export_path(output, &item.path, sent_ms, options.timezone_offset_minutes);
         let temporary = PathBuf::from(format!("{}.part", destination.display()));
         let mut writer = BufWriter::new(File::create(&temporary)?);
         writer.write_all(&header[..header_len])?;
@@ -1575,6 +1595,10 @@ impl Catalog {
                 bail!("attachment changed while exporting: {}", item.path);
             }
         }
+        if let Some(sent_ms) = sent_ms {
+            apply_sent_file_times(writer.get_ref(), sent_ms);
+        }
+        drop(writer);
         fs::rename(&temporary, &destination)?;
         accumulator.progress.processed_files =
             accumulator.progress.processed_files.saturating_add(1);
@@ -4825,7 +4849,70 @@ fn detect_image_media_type_bytes(header: &[u8]) -> Option<&'static str> {
     }
 }
 
-fn unique_export_path(directory: &Path, source_path: &str) -> PathBuf {
+/// Rejects timestamps outside 2001-2100 so a zero or otherwise broken value
+/// never turns into a nonsense file name or creation date.
+fn is_plausible_export_ms(value: i64) -> bool {
+    (978_307_200_000..=4_102_444_800_000).contains(&value)
+}
+
+/// Stamps the exported copy with the time the message was sent instead of the
+/// time it was written, so Finder's date columns match the conversation.
+fn apply_sent_file_times(file: &File, sent_ms: i64) {
+    let Ok(offset) = u64::try_from(sent_ms) else {
+        return;
+    };
+    let sent = UNIX_EPOCH + Duration::from_millis(offset);
+    #[cfg_attr(not(target_vendor = "apple"), allow(unused_mut))]
+    let mut times = FileTimes::new().set_modified(sent).set_accessed(sent);
+    #[cfg(target_vendor = "apple")]
+    {
+        times = times.set_created(sent);
+    }
+    // Best effort: a file system that refuses the stamp must not fail the export.
+    let _ = file.set_times(times);
+}
+
+/// `YYYY-MM-DD_HHMMSS` in the viewer's time zone, so exported names sort
+/// chronologically by name in Finder.
+fn export_name_prefix(sent_ms: i64, timezone_offset_minutes: i32) -> String {
+    let local_ms = sent_ms + i64::from(timezone_offset_minutes) * 60_000;
+    let seconds = local_ms.div_euclid(1_000);
+    let days = seconds.div_euclid(86_400);
+    let time_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}_{:02}{:02}{:02}",
+        time_of_day / 3_600,
+        (time_of_day / 60) % 60,
+        time_of_day % 60
+    )
+}
+
+/// Howard Hinnant's days-from-epoch to civil date conversion.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+fn unique_export_path(
+    directory: &Path,
+    source_path: &str,
+    sent_ms: Option<i64>,
+    timezone_offset_minutes: i32,
+) -> PathBuf {
     let normalized = source_path.replace('\\', "/");
     let basename = normalized
         .rsplit('/')
@@ -4846,6 +4933,13 @@ fn unique_export_path(directory: &Path, source_path: &str) -> PathBuf {
         "attachment.bin".to_string()
     } else {
         safe_name
+    };
+    let safe_name = match sent_ms {
+        Some(sent_ms) => format!(
+            "{}_{safe_name}",
+            export_name_prefix(sent_ms, timezone_offset_minutes)
+        ),
+        None => safe_name,
     };
     let mut candidate = directory.join(&safe_name);
     let extension = Path::new(&safe_name)
