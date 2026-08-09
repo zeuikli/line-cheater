@@ -129,6 +129,7 @@ const elements = {
   attachmentsView: document.querySelector("#attachments-view"),
   attachmentSort: document.querySelector("#attachment-sort"),
   attachmentChat: document.querySelector("#attachment-chat"),
+  attachmentChatClear: document.querySelector("#attachment-chat-clear"),
   attachmentChatMode: document.querySelector("#attachment-chat-mode"),
   attachmentTypeMode: document.querySelector("#attachment-type-mode"),
   attachmentIncludeThumbnails: document.querySelector("#attachment-include-thumbnails"),
@@ -1674,19 +1675,37 @@ function buildAttachmentChatOptions() {
     map.set(key, entry);
   }
   const entries = [...map.entries()].sort((a, b) => b[1].count - a[1].count);
-  const select = elements.attachmentChat;
+  const container = elements.attachmentChat;
   const available = new Set(entries.map(([key]) => key));
   // Drop selections that no longer exist (e.g. after toggling thumbnails).
   for (const key of [...attachmentFilter.chats]) {
     if (!available.has(key)) attachmentFilter.chats.delete(key);
   }
-  select.replaceChildren();
+  container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "attachment-chat-empty";
+    empty.textContent = "沒有可篩選的聊天室。";
+    container.append(empty);
+    return;
+  }
   for (const [key, entry] of entries) {
-    const option = document.createElement("option");
-    option.value = key;
-    option.textContent = `${entry.label}（${entry.count.toLocaleString()}）`;
-    option.selected = attachmentFilter.chats.has(key);
-    select.append(option);
+    const option = document.createElement("label");
+    option.className = "attachment-chat-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = key;
+    checkbox.checked = attachmentFilter.chats.has(key);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) attachmentFilter.chats.add(key);
+      else attachmentFilter.chats.delete(key);
+      applyAttachmentFilters();
+    });
+    const text = document.createElement("span");
+    text.textContent = `${entry.label}（${entry.count.toLocaleString()}）`;
+    text.title = entry.label;
+    option.append(checkbox, text);
+    container.append(option);
   }
 }
 
@@ -4506,10 +4525,12 @@ elements.attachmentSort.addEventListener("change", () => {
   attachmentFilter.sort = elements.attachmentSort.value;
   applyAttachmentFilters();
 });
-elements.attachmentChat.addEventListener("change", () => {
-  attachmentFilter.chats = new Set(
-    [...elements.attachmentChat.selectedOptions].map((option) => option.value)
-  );
+elements.attachmentChatClear.addEventListener("click", () => {
+  if (!attachmentFilter.chats.size) return;
+  attachmentFilter.chats.clear();
+  for (const box of elements.attachmentChat.querySelectorAll("input[type=\"checkbox\"]")) {
+    box.checked = false;
+  }
   applyAttachmentFilters();
 });
 elements.attachmentChatMode.addEventListener("change", () => {

@@ -516,9 +516,14 @@
                       <option value="exclude">排除所選</option>
                     </select>
                   </label>
-                  <label class="attachment-chat-field">聊天室（可多選，不選＝全部）
-                    <select id="attachment-chat" multiple size="4"></select>
-                  </label>
+                  <div class="attachment-chat-field">
+                    <span class="attachment-chat-heading">
+                      聊天室（可複選，不選＝全部）
+                      <button id="attachment-chat-clear" type="button" class="link-button">清除</button>
+                    </span>
+                    <div id="attachment-chat" class="attachment-chat-list"
+                         role="group" aria-label="聊天室篩選"></div>
+                  </div>
                   <label>類型篩選
                     <select id="attachment-type-mode">
                       <option value="include">只包含所選</option>
