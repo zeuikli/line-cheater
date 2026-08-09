@@ -34,6 +34,7 @@ const allowedMethods = new Set([
   "scanCatalog",
   "listAttachments",
   "exportAttachments",
+  "exportAttachmentsFiltered",
   "exportConversation",
   "setAttachmentMarked",
   "clearManualAttachmentPlan",
@@ -75,6 +76,7 @@ const jobMethods = new Set([
   "planAutomaticCleanup",
   "clearAdvancedCleanupPlan",
   "exportAttachments",
+  "exportAttachmentsFiltered",
   "exportConversation"
 ]);
 const assetFiles = new Map([
@@ -282,7 +284,8 @@ function cleanCancelledOperation(operation) {
         retryDelay: 100
       });
     }
-    if (operation.method === "exportAttachments" && operation.output) {
+    if ((operation.method === "exportAttachments" ||
+         operation.method === "exportAttachmentsFiltered") && operation.output) {
       fs.rmSync(`${operation.output}.partial`, {
         recursive: true,
         force: true,
@@ -478,7 +481,7 @@ async function registerIpc() {
       candidateOutputToken = token;
       safeParams.output = output;
     }
-    if (method === "exportAttachments") {
+    if (method === "exportAttachments" || method === "exportAttachmentsFiltered") {
       const token = String(safeParams.output || "");
       const baseDirectory = exportOutputTokens.get(token);
       if (!baseDirectory) throw new Error("附件匯出目的地授權已失效，請重新選擇資料夾。");
@@ -516,7 +519,7 @@ async function registerIpc() {
     }
     try {
       const result = await client.request(method, safeParams, { jobId });
-      if (method === "exportAttachments") {
+      if (method === "exportAttachments" || method === "exportAttachmentsFiltered") {
         exportOutputTokens.delete(exportOutputToken);
         return result;
       }

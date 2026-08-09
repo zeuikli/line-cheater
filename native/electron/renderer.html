@@ -96,6 +96,15 @@
               <small>查看聊天室與訊息</small>
             </span>
           </button>
+          <button class="sidebar-item" data-view="attachments" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 11.5 12.5 19a4.5 4.5 0 0 1-6.4-6.4l7.6-7.6a3 3 0 0 1 4.3 4.3l-7.6 7.6a1.5 1.5 0 0 1-2.2-2.1l6.9-6.9"></path>
+            </svg>
+            <span>
+              <strong>附件</strong>
+              <small>依大小、類型、聊天室篩選</small>
+            </span>
+          </button>
           <button class="sidebar-item" data-view="cleanup" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 14h8l1-14"></path>
@@ -168,6 +177,11 @@
                     載入備份後顯示聊天室。
                   </p>
                   <button id="retry-chats" class="retry-button hidden" type="button">重試</button>
+                </div>
+                <div class="chat-search-row">
+                  <input id="chat-search" type="search" maxlength="1024"
+                    placeholder="搜尋聊天室名稱" aria-label="搜尋聊天室名稱"
+                    autocomplete="off" spellcheck="false" disabled>
                 </div>
                 <div id="chats" class="chat-list" role="listbox" aria-label="聊天室列表">
                   <div class="empty-state">載入備份後顯示聊天室。</div>
@@ -480,6 +494,69 @@
                   也可以回到「瀏覽」選擇單一聊天室，或在「清理」頁面直接將聊天室與其附件一併加入計畫。
                 </p>
               </div>
+            </div>
+          </section>
+
+          <section id="attachments-view" class="workspace-view hidden" aria-labelledby="attachments-heading">
+            <h2 id="attachments-heading" class="sr-only">所有附件</h2>
+            <div class="panel attachments-panel">
+              <div class="attachments-toolbar">
+                <div class="attachments-controls">
+                  <label>排序
+                    <select id="attachment-sort">
+                      <option value="size-desc">容量：大到小</option>
+                      <option value="size-asc">容量：小到大</option>
+                      <option value="date-desc">時間：新到舊</option>
+                      <option value="date-asc">時間：舊到新</option>
+                    </select>
+                  </label>
+                  <label>聊天室篩選
+                    <select id="attachment-chat-mode">
+                      <option value="include">只包含所選</option>
+                      <option value="exclude">排除所選</option>
+                    </select>
+                  </label>
+                  <div class="attachment-chat-field">
+                    <span class="attachment-chat-heading">
+                      聊天室（可複選，不選＝全部）
+                      <button id="attachment-chat-clear" type="button" class="link-button">清除</button>
+                    </span>
+                    <div id="attachment-chat" class="attachment-chat-list"
+                         role="group" aria-label="聊天室篩選"></div>
+                  </div>
+                  <label>類型篩選
+                    <select id="attachment-type-mode">
+                      <option value="include">只包含所選</option>
+                      <option value="exclude">排除所選</option>
+                    </select>
+                  </label>
+                  <label class="attachment-thumb-toggle">
+                    <input id="attachment-include-thumbnails" type="checkbox">
+                    <span>包含縮圖</span>
+                  </label>
+                  <input id="attachment-search" type="search" maxlength="1024"
+                    placeholder="搜尋檔名或路徑" aria-label="搜尋附件檔名或路徑"
+                    autocomplete="off" spellcheck="false">
+                </div>
+                <div id="attachment-type-chips" class="attachment-type-chips"
+                     role="group" aria-label="檔案類型篩選"></div>
+                <div class="attachments-actions">
+                  <p id="attachment-summary" class="panel-status" role="status" aria-live="polite">
+                    載入備份後顯示附件。
+                  </p>
+                  <button id="export-filtered-attachments" class="primary-button" type="button" disabled>
+                    匯出全部（套用篩選）
+                  </button>
+                </div>
+              </div>
+              <div id="attachment-list" class="attachment-list" role="list" aria-label="附件列表">
+                <div class="empty-state">載入備份後顯示附件。</div>
+              </div>
+              <nav class="attachment-pagination" aria-label="附件分頁">
+                <button id="attachment-previous" type="button" disabled>上一頁</button>
+                <span id="attachment-page-info" aria-live="polite">第 1 頁</span>
+                <button id="attachment-next" type="button" disabled>下一頁</button>
+              </nav>
             </div>
           </section>
         </div>

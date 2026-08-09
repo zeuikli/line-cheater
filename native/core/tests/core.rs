@@ -1940,6 +1940,117 @@ fn stages_bounded_image_previews_from_directory_and_archive() {
 }
 
 #[test]
+fn filtered_export_applies_category_filter_and_reports_empty_result() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    let prepared = prepare_source(&source, &temporary.path().join("filtered-work")).unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let catalog_path = temporary.path().join("filtered-export/catalog.sqlite");
+    let mut catalog = Catalog::open(&catalog_path).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    catalog
+        .index_attachment_contexts(&database, None, None, |_| {})
+        .unwrap();
+    let export_root = temporary.path().join("filtered-exports");
+    fs::create_dir_all(&export_root).unwrap();
+
+    // Include only images: exports the referenced image original into a fresh folder.
+    let output = export_root.join("images");
+    let report = catalog
+        .export_filtered_attachments(
+            &source,
+            SourceKind::Directory,
+            None,
+            None,
+            &[],
+            &[],
+            &["image".to_string()],
+            &[],
+            &output,
+            ExportOptions {
+                images_only: false,
+                include_thumbnails: false,
+            },
+            |_| {},
+        )
+        .unwrap();
+    assert!(report.exported_files >= 1);
+    assert!(output.join("12345678.jpg").is_file());
+
+    // Excluding the chat that owns the image leaves nothing to export.
+    let excluded_output = export_root.join("chat-excluded");
+    assert!(
+        catalog
+            .export_filtered_attachments(
+                &source,
+                SourceKind::Directory,
+                None,
+                None,
+                &[],
+                &["line:7".to_string()],
+                &[],
+                &[],
+                &excluded_output,
+                ExportOptions {
+                    images_only: false,
+                    include_thumbnails: false,
+                },
+                |_| {},
+            )
+            .is_err()
+    );
+
+    // Including that same chat exports the image again.
+    let included_output = export_root.join("chat-included");
+    let included = catalog
+        .export_filtered_attachments(
+            &source,
+            SourceKind::Directory,
+            None,
+            None,
+            &["line:7".to_string()],
+            &[],
+            &[],
+            &[],
+            &included_output,
+            ExportOptions {
+                images_only: false,
+                include_thumbnails: false,
+            },
+            |_| {},
+        )
+        .unwrap();
+    assert!(included.exported_files >= 1);
+    assert!(included_output.join("12345678.jpg").is_file());
+
+    // A category with no matching attachments is reported as an error, not an empty folder.
+    let empty_output = export_root.join("voice");
+    assert!(
+        catalog
+            .export_filtered_attachments(
+                &source,
+                SourceKind::Directory,
+                None,
+                None,
+                &[],
+                &[],
+                &["voice".to_string()],
+                &[],
+                &empty_output,
+                ExportOptions {
+                    images_only: false,
+                    include_thumbnails: false,
+                },
+                |_| {},
+            )
+            .is_err()
+    );
+    assert!(!empty_output.exists());
+}
+
+#[test]
 fn exports_selected_images_from_directory_and_archive_without_overwriting_source() {
     let temporary = TempDir::new().unwrap();
     let source = make_fixture(temporary.path());
@@ -1970,6 +2081,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 images_only: true,
                 include_thumbnails: true,
             },
+            true,
             |value| progress.push(value),
         )
         .unwrap();
@@ -2000,6 +2112,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                     images_only: false,
                     include_thumbnails: false,
                 },
+                true,
                 |_| {},
             )
             .is_err()
@@ -2015,6 +2128,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                     images_only: false,
                     include_thumbnails: false,
                 },
+                true,
                 |_| {},
             )
             .is_err()
@@ -2053,6 +2167,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 images_only: true,
                 include_thumbnails: false,
             },
+            true,
             |_| {},
         )
         .unwrap();

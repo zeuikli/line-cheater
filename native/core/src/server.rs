@@ -480,6 +480,26 @@ struct ExportAttachmentsParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ExportFilteredAttachmentsParams {
+    output: PathBuf,
+    #[serde(default)]
+    kind: Option<AttachmentKind>,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    include_chats: Vec<String>,
+    #[serde(default)]
+    exclude_chats: Vec<String>,
+    #[serde(default)]
+    include_categories: Vec<String>,
+    #[serde(default)]
+    exclude_categories: Vec<String>,
+    #[serde(default)]
+    include_thumbnails: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ExportConversationParams {
     output: PathBuf,
     source: String,
@@ -995,6 +1015,60 @@ fn handle_request<W: Write>(
                 &params.output,
                 ExportOptions {
                     images_only: params.images_only,
+                    include_thumbnails: params.include_thumbnails,
+                },
+                true,
+                |progress| {
+                    let _ = write_export_progress(
+                        output,
+                        &request_id,
+                        job_id.as_deref(),
+                        "匯出附件",
+                        progress,
+                    );
+                },
+            );
+            session.catalog.clear_active_job("export")?;
+            Ok(serde_json::to_value(result?)?)
+        }
+        "exportAttachmentsFiltered" => {
+            let params: ExportFilteredAttachmentsParams = parse_params(request)?;
+            let request_id = request.id.clone();
+            let job_id = request.job_id.clone();
+            if !session.catalog_source_verified {
+                write_export_progress(
+                    output,
+                    &request_id,
+                    job_id.as_deref(),
+                    "驗證來源備份",
+                    crate::model::ExportProgress::default(),
+                )?;
+                let current = session.catalog.source_matches_current(
+                    &session.prepared.original_path,
+                    session.prepared.report.kind,
+                )?;
+                session.catalog_source_verified = current;
+                if !current {
+                    anyhow::bail!(
+                        "source changed since the last catalog scan; rescan the backup before exporting"
+                    );
+                }
+            }
+            session
+                .catalog
+                .set_active_job("export", request.job_id.as_deref())?;
+            let result = session.catalog.export_filtered_attachments(
+                &session.prepared.original_path,
+                session.prepared.report.kind,
+                params.kind,
+                params.search.as_deref(),
+                &params.include_chats,
+                &params.exclude_chats,
+                &params.include_categories,
+                &params.exclude_categories,
+                &params.output,
+                ExportOptions {
+                    images_only: false,
                     include_thumbnails: params.include_thumbnails,
                 },
                 |progress| {

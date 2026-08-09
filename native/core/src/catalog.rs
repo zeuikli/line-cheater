@@ -1098,6 +1098,7 @@ impl Catalog {
         scope: ExportScope<'_>,
         output: &Path,
         options: ExportOptions,
+        enforce_cap: bool,
         mut on_progress: F,
     ) -> Result<ExportReport>
     where
@@ -1132,7 +1133,8 @@ impl Catalog {
             bail!("partial export output already exists; remove it before retrying");
         }
 
-        let (total_files, total_bytes) = self.export_totals(&scope, options.include_thumbnails)?;
+        let (total_files, total_bytes) =
+            self.export_totals(&scope, options.include_thumbnails, enforce_cap)?;
         let mut accumulator = ExportAccumulator {
             progress: ExportProgress {
                 total_files,
@@ -1154,6 +1156,7 @@ impl Catalog {
                 paths,
                 &partial,
                 options,
+                enforce_cap,
                 &mut accumulator,
                 &mut on_progress,
             ),
@@ -1197,6 +1200,126 @@ impl Catalog {
             let _ = fs::remove_dir_all(&partial);
         }
         result
+    }
+
+    /// Collect attachment paths that match the given browsing filters, without the
+    /// interactive per-selection cap. Used by the "export all (filtered)" flow so the
+    /// renderer only sends small filter criteria instead of tens of thousands of paths.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_filtered_attachment_paths(
+        &self,
+        kind: Option<AttachmentKind>,
+        search: Option<&str>,
+        include_chats: &[String],
+        exclude_chats: &[String],
+        include_categories: &[String],
+        exclude_categories: &[String],
+        include_thumbnails: bool,
+    ) -> Result<Vec<String>> {
+        let search = search
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{}%", escape_like(value)));
+        let kind_value = kind.map(AttachmentKind::as_str);
+        let include_cat: HashSet<&str> = include_categories.iter().map(String::as_str).collect();
+        let exclude_cat: HashSet<&str> = exclude_categories.iter().map(String::as_str).collect();
+        let include_chat: HashSet<&str> = include_chats.iter().map(String::as_str).collect();
+        let exclude_chat: HashSet<&str> = exclude_chats.iter().map(String::as_str).collect();
+        let sql = "
+            SELECT f.path, f.attachment_kind, f.message_content_type,
+                   f.context_source, f.message_chat_pk
+            FROM files f
+            WHERE f.attachment_kind IS NOT NULL
+              AND (?1 IS NULL OR f.attachment_kind = ?1)
+              AND (?2 IS NULL OR f.path LIKE ?2 ESCAPE '\\')
+            ORDER BY f.id ASC
+        ";
+        let mut statement = self.connection.prepare(sql)?;
+        let rows = statement.query_map(params![kind_value, search], |row| {
+            let path: String = row.get(0)?;
+            let attachment_kind: String = row.get(1)?;
+            let content_type: Option<i64> = row.get(2)?;
+            let context_source: Option<String> = row.get(3)?;
+            let chat_pk: Option<i64> = row.get(4)?;
+            Ok((path, attachment_kind, content_type, context_source, chat_pk))
+        })?;
+        let mut paths = Vec::new();
+        for row in rows {
+            let (path, attachment_kind, content_type, context_source, chat_pk) = row?;
+            if path.is_empty() || path.len() > 4_096 {
+                continue;
+            }
+            if !include_thumbnails && attachment_kind == "thumbnail" {
+                continue;
+            }
+            // Chat key mirrors the renderer's `attachmentChatKey`: only referenced
+            // attachments (with a resolved source + chat) belong to a chat.
+            let chat_key = match (context_source.as_deref(), chat_pk) {
+                (Some(source), Some(pk)) if !source.is_empty() => format!("{source}:{pk}"),
+                _ => String::new(),
+            };
+            if !include_chat.is_empty() && !include_chat.contains(chat_key.as_str()) {
+                continue;
+            }
+            if exclude_chat.contains(chat_key.as_str()) {
+                continue;
+            }
+            let category = attachment_category(content_type);
+            if !include_cat.is_empty() && !include_cat.contains(category) {
+                continue;
+            }
+            if exclude_cat.contains(category) {
+                continue;
+            }
+            paths.push(path);
+        }
+        Ok(paths)
+    }
+
+    /// Export every attachment matching the browsing filters into a fresh directory.
+    /// Unlike [`Self::export_attachments`] with explicit paths, there is no 1,000-file cap.
+    #[allow(clippy::too_many_arguments)]
+    pub fn export_filtered_attachments<F>(
+        &self,
+        source: &Path,
+        source_kind: SourceKind,
+        kind: Option<AttachmentKind>,
+        search: Option<&str>,
+        include_chats: &[String],
+        exclude_chats: &[String],
+        include_categories: &[String],
+        exclude_categories: &[String],
+        output: &Path,
+        options: ExportOptions,
+        on_progress: F,
+    ) -> Result<ExportReport>
+    where
+        F: FnMut(ExportProgress),
+    {
+        if source_kind == SourceKind::Sqlite {
+            bail!("direct Line.sqlite sources do not contain exportable attachment files");
+        }
+        let paths = self.collect_filtered_attachment_paths(
+            kind,
+            search,
+            include_chats,
+            exclude_chats,
+            include_categories,
+            exclude_categories,
+            options.include_thumbnails,
+        )?;
+        if paths.is_empty() {
+            bail!("no attachments match the current filters");
+        }
+        self.export_attachments(
+            source,
+            source_kind,
+            ExportScope::Paths(&paths),
+            output,
+            options,
+            false,
+            on_progress,
+        )
     }
 
     pub(crate) fn write_conversation_attachments<W, F>(
@@ -1326,13 +1449,14 @@ impl Catalog {
         &self,
         scope: &ExportScope<'_>,
         include_thumbnails: bool,
+        enforce_cap: bool,
     ) -> Result<(u64, u64)> {
         match scope {
             ExportScope::Paths(paths) => {
                 if paths.is_empty() {
                     bail!("at least one attachment path is required");
                 }
-                if paths.len() > MAX_EXPORT_PATHS {
+                if enforce_cap && paths.len() > MAX_EXPORT_PATHS {
                     bail!("export selection cannot contain more than {MAX_EXPORT_PATHS} files");
                 }
                 let mut total_files = 0_u64;
@@ -1392,13 +1516,14 @@ impl Catalog {
         paths: &[String],
         output: &Path,
         options: ExportOptions,
+        enforce_cap: bool,
         accumulator: &mut ExportAccumulator,
         on_progress: &mut F,
     ) -> Result<()>
     where
         F: FnMut(ExportProgress),
     {
-        if paths.len() > MAX_EXPORT_PATHS {
+        if enforce_cap && paths.len() > MAX_EXPORT_PATHS {
             bail!("export selection cannot contain more than {MAX_EXPORT_PATHS} files");
         }
         let mut items = Vec::new();
@@ -5386,6 +5511,22 @@ fn validate_sha256(value: &str) -> Result<()> {
         bail!("sha256 must contain exactly 64 hexadecimal characters");
     }
     Ok(())
+}
+
+/// Map a LINE message content type to a coarse attachment category. Kept in sync with
+/// the identical mapping in the renderer (`attachmentCategory`) so the "export all
+/// (filtered)" result matches exactly what the Attachments tab shows.
+fn attachment_category(content_type: Option<i64>) -> &'static str {
+    match content_type {
+        Some(1) | Some(16) | Some(112) => "image",
+        Some(2) | Some(17) => "video",
+        Some(3) => "voice",
+        Some(4) | Some(14) => "file",
+        Some(5) | Some(101) => "sticker",
+        Some(100) => "location",
+        Some(107) => "link",
+        _ => "other",
+    }
 }
 
 fn attachment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentItem> {
