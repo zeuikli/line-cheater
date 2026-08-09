@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use line_backup_native::{
@@ -12,6 +13,42 @@ use line_backup_native::{
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
+
+fn exported_paths(directory: &Path) -> Vec<String> {
+    let mut names = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// Exported names carry a `YYYY-MM-DD_HHMMSS_` sort prefix, so tests look the
+/// file up by its original name instead of hard-coding the prefix.
+fn exported_file(directory: &Path, original_name: &str) -> PathBuf {
+    let matches = exported_paths(directory)
+        .into_iter()
+        .filter(|name| name == original_name || name.ends_with(&format!("_{original_name}")))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one export of {original_name} in {}",
+        directory.display()
+    );
+    let name = &matches[0];
+    if name != original_name {
+        let prefix = &name[..name.len() - original_name.len() - 1];
+        assert_eq!(prefix.len(), 17, "unexpected export prefix: {name}");
+        assert!(
+            prefix
+                .chars()
+                .all(|character| character.is_ascii_digit() || matches!(character, '-' | '_')),
+            "unexpected export prefix: {name}"
+        );
+    }
+    directory.join(name)
+}
 
 fn make_fixture(root: &Path) -> PathBuf {
     let source = root.join("LINE");
@@ -2321,12 +2358,13 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
                 images_only: false,
                 include_thumbnails: false,
                 enforce_path_limit: false,
+                timezone_offset_minutes: 0,
             },
             |_| {},
         )
         .unwrap();
     assert!(report.exported_files >= 1);
-    assert!(output.join("12345678.jpg").is_file());
+    assert!(exported_file(&output, "12345678.jpg").is_file());
 
     // Excluding the chat that owns the image leaves nothing to export.
     let excluded_output = export_root.join("chat-excluded");
@@ -2346,6 +2384,7 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
                     images_only: false,
                     include_thumbnails: false,
                     enforce_path_limit: false,
+                    timezone_offset_minutes: 0,
                 },
                 |_| {},
             )
@@ -2369,12 +2408,13 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
                 images_only: false,
                 include_thumbnails: false,
                 enforce_path_limit: false,
+                timezone_offset_minutes: 0,
             },
             |_| {},
         )
         .unwrap();
     assert!(included.exported_files >= 1);
-    assert!(included_output.join("12345678.jpg").is_file());
+    assert!(exported_file(&included_output, "12345678.jpg").is_file());
 
     // A category with no matching attachments is reported as an error, not an empty folder.
     let empty_output = export_root.join("voice");
@@ -2394,6 +2434,7 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
                     images_only: false,
                     include_thumbnails: false,
                     enforce_path_limit: false,
+                    timezone_offset_minutes: 0,
                 },
                 |_| {},
             )
@@ -2433,22 +2474,17 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 images_only: true,
                 include_thumbnails: true,
                 enforce_path_limit: true,
+                timezone_offset_minutes: 480,
             },
             |value| progress.push(value),
         )
         .unwrap();
     assert_eq!(report.exported_files, 2);
     assert_eq!(report.skipped_files, 0);
-    assert!(output.join("12345678.jpg").is_file());
-    assert!(output.join("12345678.thumb").is_file());
-    assert_eq!(
-        fs::read(output.join("12345678.jpg")).unwrap(),
-        b"\xff\xd8\xffimage123"
-    );
-    assert_eq!(
-        fs::read(output.join("12345678.thumb")).unwrap(),
-        b"\x89PNG\r\n\x1a\n"
-    );
+    let exported_image = exported_file(&output, "12345678.jpg");
+    let exported_thumbnail = exported_file(&output, "12345678.thumb");
+    assert_eq!(fs::read(&exported_image).unwrap(), b"\xff\xd8\xffimage123");
+    assert_eq!(fs::read(&exported_thumbnail).unwrap(), b"\x89PNG\r\n\x1a\n");
     assert!(!output.with_extension("partial").exists());
     assert_eq!(progress.last().unwrap().processed_files, 2);
 
@@ -2464,6 +2500,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                     images_only: false,
                     include_thumbnails: false,
                     enforce_path_limit: true,
+                    timezone_offset_minutes: 480,
                 },
                 |_| {},
             )
@@ -2480,6 +2517,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                     images_only: false,
                     include_thumbnails: false,
                     enforce_path_limit: true,
+                    timezone_offset_minutes: 480,
                 },
                 |_| {},
             )
@@ -2519,14 +2557,76 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 images_only: true,
                 include_thumbnails: false,
                 enforce_path_limit: true,
+                timezone_offset_minutes: 480,
             },
             |_| {},
         )
         .unwrap();
     assert_eq!(archive_report.exported_files, 1);
-    assert!(archive_output.join("12345678.jpg").is_file());
-    assert!(!archive_output.join("12345678.thumb").exists());
+    assert!(exported_file(&archive_output, "12345678.jpg").is_file());
+    assert!(
+        !exported_paths(&archive_output)
+            .iter()
+            .any(|name| name.ends_with("12345678.thumb"))
+    );
     assert!(source.join(&database).is_file());
+}
+
+#[test]
+fn exports_name_and_stamp_files_with_the_message_send_time() {
+    const SENT_MS: i64 = 1_700_000_000_000;
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    let work = temporary.path().join("work");
+    let prepared = prepare_source(&source, &work).unwrap();
+    Connection::open(&prepared.database_path)
+        .unwrap()
+        .execute(
+            "UPDATE ZMESSAGE SET ZTIMESTAMP = ?1 WHERE ZID = '12345678'",
+            params![SENT_MS],
+        )
+        .unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let mut catalog = Catalog::open(&work.join("catalog.sqlite")).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    catalog
+        .index_attachment_contexts(&database, None, None, |_| {})
+        .unwrap();
+
+    let output = temporary.path().join("exports/chat-export");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let report = catalog
+        .export_attachments(
+            &source,
+            SourceKind::Directory,
+            ExportScope::Chat {
+                source: "line",
+                chat_pk: 7,
+            },
+            &output,
+            ExportOptions {
+                images_only: false,
+                include_thumbnails: false,
+                enforce_path_limit: true,
+                timezone_offset_minutes: 480,
+            },
+            |_| {},
+        )
+        .unwrap();
+
+    assert_eq!(report.exported_files, 1);
+    // 2023-11-14 22:13:20 UTC is 2023-11-15 06:13:20 at UTC+8.
+    assert_eq!(
+        exported_paths(&output),
+        vec!["2023-11-15_061320_12345678.jpg".to_string()]
+    );
+    let metadata = fs::metadata(output.join("2023-11-15_061320_12345678.jpg")).unwrap();
+    let sent = UNIX_EPOCH + Duration::from_millis(SENT_MS as u64);
+    assert_eq!(metadata.modified().unwrap(), sent);
+    #[cfg(target_vendor = "apple")]
+    assert_eq!(metadata.created().unwrap(), sent);
 }
 
 #[test]

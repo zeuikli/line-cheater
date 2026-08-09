@@ -85,7 +85,8 @@ test("validates and forwards bounded attachment exports", async () => {
     output: "export-token",
     paths: ["Container/Message Attachments/u1/123.jpg"],
     imagesOnly: true,
-    includeThumbnails: false
+    includeThumbnails: false,
+    timezoneOffsetMinutes: 480
   });
   assert.deepEqual(calls[0], {
     method: "exportAttachments",
@@ -95,7 +96,8 @@ test("validates and forwards bounded attachment exports", async () => {
       source: null,
       chatPk: null,
       imagesOnly: true,
-      includeThumbnails: false
+      includeThumbnails: false,
+      timezoneOffsetMinutes: 480
     }
   });
   await provider.exportAttachments({
@@ -106,6 +108,15 @@ test("validates and forwards bounded attachment exports", async () => {
   });
   assert.equal(calls[1].params.source, "square");
   assert.equal(calls[1].params.chatPk, 8);
+  assert.equal(calls[1].params.timezoneOffsetMinutes, -new Date().getTimezoneOffset());
+  assert.throws(
+    () => provider.exportAttachments({
+      output: "export-token",
+      paths: ["Container/Message Attachments/u1/123.jpg"],
+      timezoneOffsetMinutes: 5000
+    }),
+    RangeError
+  );
   assert.throws(() => provider.exportAttachments({ output: "x" }), TypeError);
   assert.throws(() => provider.exportAttachments({
     output: "x",
