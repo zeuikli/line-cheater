@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::{self, File, FileTimes, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::sync_channel;
@@ -12,8 +12,10 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
-use zip::ZipArchive;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::conversation::attachment_entry_name;
 use crate::database::{LineDatabase, LineSquareDatabase, OrphanMessage, UnifiedGroupDatabase};
 use crate::model::{
     AdvancedCleanupReport, AttachmentContext, AttachmentCursor, AttachmentItem, AttachmentKind,
@@ -158,6 +160,7 @@ pub enum ExportScope<'a> {
 pub struct ExportOptions {
     pub images_only: bool,
     pub include_thumbnails: bool,
+    pub enforce_path_limit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1130,7 +1133,11 @@ impl Catalog {
             bail!("partial export output already exists; remove it before retrying");
         }
 
-        let (total_files, total_bytes) = self.export_totals(&scope, options.include_thumbnails)?;
+        let (total_files, total_bytes) = self.export_totals(
+            &scope,
+            options.include_thumbnails,
+            options.enforce_path_limit,
+        )?;
         let mut accumulator = ExportAccumulator {
             progress: ExportProgress {
                 total_files,
@@ -1197,17 +1204,264 @@ impl Catalog {
         result
     }
 
+    /// Collect attachment paths that match the given browsing filters, without the
+    /// interactive per-selection cap. Used by the "export all (filtered)" flow so the
+    /// renderer only sends small filter criteria instead of tens of thousands of paths.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_filtered_attachment_paths(
+        &self,
+        kind: Option<AttachmentKind>,
+        search: Option<&str>,
+        include_chats: &[String],
+        exclude_chats: &[String],
+        include_categories: &[String],
+        exclude_categories: &[String],
+        include_thumbnails: bool,
+    ) -> Result<Vec<String>> {
+        let search = search
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("%{}%", escape_like(value)));
+        let kind_value = kind.map(AttachmentKind::as_str);
+        let include_cat: HashSet<&str> = include_categories.iter().map(String::as_str).collect();
+        let exclude_cat: HashSet<&str> = exclude_categories.iter().map(String::as_str).collect();
+        let include_chat: HashSet<&str> = include_chats.iter().map(String::as_str).collect();
+        let exclude_chat: HashSet<&str> = exclude_chats.iter().map(String::as_str).collect();
+        let sql = "
+            SELECT f.path, f.attachment_kind, f.message_content_type,
+                   f.context_source, f.message_chat_pk
+            FROM files f
+            WHERE f.attachment_kind IS NOT NULL
+              AND (?1 IS NULL OR f.attachment_kind = ?1)
+              AND (?2 IS NULL OR f.path LIKE ?2 ESCAPE '\\')
+            ORDER BY f.id ASC
+        ";
+        let mut statement = self.connection.prepare(sql)?;
+        let rows = statement.query_map(params![kind_value, search], |row| {
+            let path: String = row.get(0)?;
+            let attachment_kind: String = row.get(1)?;
+            let content_type: Option<i64> = row.get(2)?;
+            let context_source: Option<String> = row.get(3)?;
+            let chat_pk: Option<i64> = row.get(4)?;
+            Ok((path, attachment_kind, content_type, context_source, chat_pk))
+        })?;
+        let mut paths = Vec::new();
+        for row in rows {
+            let (path, attachment_kind, content_type, context_source, chat_pk) = row?;
+            if path.is_empty() || path.len() > 4_096 {
+                continue;
+            }
+            if !include_thumbnails && attachment_kind == "thumbnail" {
+                continue;
+            }
+            // Chat key mirrors the renderer's `attachmentChatKey`: only referenced
+            // attachments (with a resolved source + chat) belong to a chat.
+            let chat_key = match (context_source.as_deref(), chat_pk) {
+                (Some(source), Some(pk)) if !source.is_empty() => format!("{source}:{pk}"),
+                _ => String::new(),
+            };
+            if !include_chat.is_empty() && !include_chat.contains(chat_key.as_str()) {
+                continue;
+            }
+            if exclude_chat.contains(chat_key.as_str()) {
+                continue;
+            }
+            let category = attachment_category(content_type);
+            if !include_cat.is_empty() && !include_cat.contains(category) {
+                continue;
+            }
+            if exclude_cat.contains(category) {
+                continue;
+            }
+            paths.push(path);
+        }
+        Ok(paths)
+    }
+
+    /// Export every attachment matching the browsing filters into a fresh directory.
+    /// Unlike [`Self::export_attachments`] with explicit paths, there is no 1,000-file cap.
+    #[allow(clippy::too_many_arguments)]
+    pub fn export_filtered_attachments<F>(
+        &self,
+        source: &Path,
+        source_kind: SourceKind,
+        kind: Option<AttachmentKind>,
+        search: Option<&str>,
+        include_chats: &[String],
+        exclude_chats: &[String],
+        include_categories: &[String],
+        exclude_categories: &[String],
+        output: &Path,
+        options: ExportOptions,
+        on_progress: F,
+    ) -> Result<ExportReport>
+    where
+        F: FnMut(ExportProgress),
+    {
+        if source_kind == SourceKind::Sqlite {
+            bail!("direct Line.sqlite sources do not contain exportable attachment files");
+        }
+        let paths = self.collect_filtered_attachment_paths(
+            kind,
+            search,
+            include_chats,
+            exclude_chats,
+            include_categories,
+            exclude_categories,
+            options.include_thumbnails,
+        )?;
+        if paths.is_empty() {
+            bail!("no attachments match the current filters");
+        }
+        let options = ExportOptions {
+            enforce_path_limit: false,
+            ..options
+        };
+        self.export_attachments(
+            source,
+            source_kind,
+            ExportScope::Paths(&paths),
+            output,
+            options,
+            on_progress,
+        )
+    }
+
+    pub(crate) fn write_conversation_attachments<W, F>(
+        &self,
+        source: &Path,
+        source_kind: SourceKind,
+        chat_source: &str,
+        chat_pk: i64,
+        writer: &mut ZipWriter<W>,
+        mut on_progress: F,
+    ) -> Result<ExportProgress>
+    where
+        W: Write + Seek,
+        F: FnMut(ExportProgress),
+    {
+        if source_kind == SourceKind::Sqlite {
+            return Ok(ExportProgress::default());
+        }
+        if !matches!(chat_source, "line" | "square") {
+            bail!("conversation source must be `line` or `square`");
+        }
+        let source = source
+            .canonicalize()
+            .with_context(|| format!("source does not exist: {}", source.display()))?;
+        validate_bound_source(self, &source)?;
+        let (total_files, total_bytes): (i64, i64) = self.connection.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0)
+             FROM files
+             WHERE attachment_kind IS NOT NULL
+               AND reference_status = 'referenced'
+               AND context_source = ?1
+               AND message_chat_pk = ?2",
+            params![chat_source, chat_pk],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut progress = ExportProgress {
+            total_files: total_files.max(0) as u64,
+            total_bytes: total_bytes.max(0) as u64,
+            ..ExportProgress::default()
+        };
+        on_progress(progress);
+        let mut statement = self.connection.prepare(
+            "SELECT path, bytes, modified_ns, attachment_kind, content_sha256
+             FROM files
+             WHERE attachment_kind IS NOT NULL
+               AND reference_status = 'referenced'
+               AND context_source = ?1
+               AND message_chat_pk = ?2
+             ORDER BY id ASC",
+        )?;
+        let rows = statement.query_map(params![chat_source, chat_pk], |row| {
+            Ok(ExportItem {
+                path: row.get(0)?,
+                bytes: row.get::<_, i64>(1)?.max(0) as u64,
+                modified_ns: row.get(2)?,
+                kind: row
+                    .get::<_, String>(3)?
+                    .parse()
+                    .map_err(|error: anyhow::Error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            error.into(),
+                        )
+                    })?,
+                content_sha256: row.get(4)?,
+            })
+        })?;
+
+        match source_kind {
+            SourceKind::Directory => {
+                for row in rows {
+                    let item = row?;
+                    let candidate = source.join(&item.path).canonicalize().with_context(|| {
+                        format!("attachment does not exist in source: {}", item.path)
+                    })?;
+                    if !candidate.starts_with(&source) || !candidate.is_file() {
+                        bail!("attachment path escapes the selected source");
+                    }
+                    let metadata = fs::metadata(&candidate)?;
+                    if metadata.len() != item.bytes
+                        || modified_ns(metadata.modified().ok()) != item.modified_ns
+                    {
+                        bail!("attachment changed since catalog scan: {}", item.path);
+                    }
+                    let mut file = File::open(&candidate)?;
+                    write_conversation_attachment_reader(
+                        &mut file,
+                        &item,
+                        writer,
+                        &mut progress,
+                        &mut on_progress,
+                    )?;
+                    let after = fs::metadata(&candidate)?;
+                    if after.len() != item.bytes
+                        || modified_ns(after.modified().ok()) != item.modified_ns
+                    {
+                        bail!("attachment changed while exporting: {}", item.path);
+                    }
+                }
+            }
+            SourceKind::ImazingArchive => {
+                let mut archive = ZipArchive::new(File::open(&source)?)?;
+                for row in rows {
+                    let item = row?;
+                    let mut entry = archive.by_name(&item.path).with_context(|| {
+                        format!("attachment is missing from archive: {}", item.path)
+                    })?;
+                    if entry.is_dir() || entry.size() != item.bytes {
+                        bail!("archive attachment metadata does not match the catalog");
+                    }
+                    write_conversation_attachment_reader(
+                        &mut entry,
+                        &item,
+                        writer,
+                        &mut progress,
+                        &mut on_progress,
+                    )?;
+                }
+            }
+            SourceKind::Sqlite => unreachable!("SQLite exports return before catalog access"),
+        }
+        Ok(progress)
+    }
+
     fn export_totals(
         &self,
         scope: &ExportScope<'_>,
         include_thumbnails: bool,
+        enforce_cap: bool,
     ) -> Result<(u64, u64)> {
         match scope {
             ExportScope::Paths(paths) => {
                 if paths.is_empty() {
                     bail!("at least one attachment path is required");
                 }
-                if paths.len() > MAX_EXPORT_PATHS {
+                if enforce_cap && paths.len() > MAX_EXPORT_PATHS {
                     bail!("export selection cannot contain more than {MAX_EXPORT_PATHS} files");
                 }
                 let mut total_files = 0_u64;
@@ -1273,7 +1527,7 @@ impl Catalog {
     where
         F: FnMut(ExportProgress),
     {
-        if paths.len() > MAX_EXPORT_PATHS {
+        if options.enforce_path_limit && paths.len() > MAX_EXPORT_PATHS {
             bail!("export selection cannot contain more than {MAX_EXPORT_PATHS} files");
         }
         let mut items = Vec::new();
@@ -4797,6 +5051,54 @@ fn cleanup_group_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(CleanupG
     ))
 }
 
+fn write_conversation_attachment_reader<R, W, F>(
+    reader: &mut R,
+    item: &ExportItem,
+    writer: &mut ZipWriter<W>,
+    progress: &mut ExportProgress,
+    on_progress: &mut F,
+) -> Result<()>
+where
+    R: Read,
+    W: Write + Seek,
+    F: FnMut(ExportProgress),
+{
+    let entry_name = attachment_entry_name(&item.path);
+    writer.start_file(
+        entry_name,
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+    )?;
+    let mut digest = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; EXPORT_BUFFER_BYTES];
+    while copied < item.bytes {
+        let remaining = item.bytes.saturating_sub(copied);
+        let target = remaining.min(buffer.len() as u64) as usize;
+        let read = reader.read(&mut buffer[..target])?;
+        if read == 0 {
+            bail!("attachment ended before its cataloged size: {}", item.path);
+        }
+        writer.write_all(&buffer[..read])?;
+        digest.update(&buffer[..read]);
+        copied = copied.saturating_add(read as u64);
+        progress.processed_bytes = progress.processed_bytes.saturating_add(read as u64);
+        on_progress(*progress);
+    }
+    if let Some(expected) = &item.content_sha256 {
+        let actual = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if actual != *expected {
+            bail!("attachment changed while exporting: {}", item.path);
+        }
+    }
+    progress.processed_files = progress.processed_files.saturating_add(1);
+    on_progress(*progress);
+    Ok(())
+}
+
 fn detect_image_media_type(path: &Path) -> Result<Option<&'static str>> {
     let mut file = File::open(path)?;
     let mut header = [0_u8; 16];
@@ -5213,6 +5515,22 @@ fn validate_sha256(value: &str) -> Result<()> {
         bail!("sha256 must contain exactly 64 hexadecimal characters");
     }
     Ok(())
+}
+
+/// Map a LINE message content type to a coarse attachment category. Kept in sync with
+/// the identical mapping in the renderer (`attachmentCategory`) so the "export all
+/// (filtered)" result matches exactly what the Attachments tab shows.
+fn attachment_category(content_type: Option<i64>) -> &'static str {
+    match content_type {
+        Some(1) | Some(16) | Some(112) => "image",
+        Some(2) | Some(17) => "video",
+        Some(3) => "voice",
+        Some(4) | Some(14) => "file",
+        Some(5) | Some(101) => "sticker",
+        Some(100) => "location",
+        Some(107) => "link",
+        _ => "other",
+    }
 }
 
 fn attachment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttachmentItem> {

@@ -192,6 +192,50 @@
     });
   };
 
+  NativeDataProvider.prototype.exportAttachmentsFiltered = function (options) {
+    options = options || {};
+    if (!options.output || typeof options.output !== "string") {
+      throw new TypeError("An export destination token is required.");
+    }
+    var search = options.search ? String(options.search) : null;
+    if (search && new TextEncoder().encode(search).length > 1024) {
+      throw new RangeError("Attachment search cannot exceed 1,024 UTF-8 bytes.");
+    }
+    function stringList(value, limit) {
+      if (!Array.isArray(value)) return [];
+      return value
+        .filter(function (item) { return typeof item === "string" && item; })
+        .slice(0, limit);
+    }
+    var kind = options.kind === "original" || options.kind === "thumbnail"
+      ? options.kind
+      : null;
+    return this.bridge.request("exportAttachmentsFiltered", {
+      output: options.output,
+      kind: kind,
+      search: search,
+      includeChats: stringList(options.includeChats, 4096),
+      excludeChats: stringList(options.excludeChats, 4096),
+      includeCategories: stringList(options.includeCategories, 32),
+      excludeCategories: stringList(options.excludeCategories, 32),
+      includeThumbnails: Boolean(options.includeThumbnails)
+    });
+  };
+
+  NativeDataProvider.prototype.exportConversation = function (options) {
+    options = options || {};
+    if (!options.output || typeof options.output !== "string") {
+      throw new TypeError("A conversation output token is required.");
+    }
+    var chatPk = Number(options.chatPk);
+    if (!Number.isInteger(chatPk)) throw new TypeError("chatPk must be an integer.");
+    return this.bridge.request("exportConversation", {
+      output: options.output,
+      source: boundedMessageSource(options.source),
+      chatPk: chatPk
+    });
+  };
+
   NativeDataProvider.prototype.setAttachmentMarked = function (path, marked) {
     if (!path || typeof path !== "string") throw new TypeError("Attachment path is required.");
     return this.bridge.request("setAttachmentMarked", {

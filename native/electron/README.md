@@ -162,28 +162,32 @@ developer machine.
    linkified, receives a bounded domain/title preview card, and opens in the
    system browser through a protocol-validated main-process bridge.
 8. Search message text with bounded native result pages.
-9. Review six cleanup categories inside a fixed-height workspace. The list
+9. Export the selected conversation from its first message through its last as
+   a portable ZIP. The archive contains one offline `index.html` plus referenced
+   originals and thumbnails under `attachments/`; direct SQLite sources export
+   the complete text-only HTML.
+10. Review six cleanup categories inside a fixed-height workspace. The list
    replaces four chat/special groups at a time, so the page header, filters,
    pagination, and candidate action never leave the window.
-10. Search/filter/sort and enter a group. Detail mode becomes an iOS
+11. Search/filter/sort and enter a group. Detail mode becomes an iOS
     Photos-style continuous album grouped by month. It fetches 24 review bundles
     per native request and keeps at most three adjacent batches (72 cards) in
     the DOM; measured virtual spacers preserve scroll position when an older
     batch is discarded. Thumbnails keep their aspect ratio without cropping,
     with message/file controls below. A loaded thumbnail is a keyboard-focusable
     zoom button and opens the same full-size image modal used by chat messages.
-11. Mark original attachments and thumbnails independently, or use the reversible
+12. Mark original attachments and thumbnails independently, or use the reversible
    delete-all / keep-thumbnail group actions.
-12. Choose an output through a native save dialog and build a full-CRC candidate
+13. Choose an output through a native save dialog and build a full-CRC candidate
     with the web-style progress/success/error dialog. After successful output
     validation, close the source session, clear its private local cache, and
     return the underlying UI to source selection while keeping the result dialog
     visible.
-13. Turn on the guarded desktop-only Advanced mode to plan deletion of a selected
+14. Turn on the guarded desktop-only Advanced mode to plan deletion of a selected
     chat and its attachments, or use the Advanced sidebar page to include empty
     chats, system-only chats, and orphan `LineSquare` messages. The source remains
     read-only; only the newly built candidate receives the SQLite rewrite.
-14. In Advanced mode, scan exact duplicate attachments and preview each group
+15. In Advanced mode, scan exact duplicate attachments and preview each group
     through the catalog-authorized image bridge. “Merge All Automatically” is
     a reversible batch button: its second state cancels all automatic merging.
     When enabled, candidate construction applies every file/chat removal first,

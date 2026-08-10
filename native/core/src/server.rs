@@ -1,21 +1,26 @@
+use std::fs::{self, File};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use crate::candidate::{
     CandidateOptions, build_candidate_with_options, line_square_rebuild_required,
 };
 use crate::catalog::{Catalog, ExportOptions, ExportScope};
+use crate::conversation::{write_html_end, write_html_start, write_message};
 use crate::database::{
     Fts5MessageIndex, LineDatabase, LineSquareDatabase, OrphanMessage, UnifiedGroupDatabase,
 };
 use crate::model::{
     AdvancedCleanupReport, AttachmentCursor, AttachmentKind, Chat, ChatCursor, ChatPage,
     CleanupCategoryActionState, CleanupGroupPage, CleanupPreflightReport, CleanupRisk,
-    DEFAULT_PAGE_SIZE, DuplicateGroupCursor, MessageCursor, MessagePage,
+    ConversationExportProgress, ConversationExportReport, DEFAULT_PAGE_SIZE, DuplicateGroupCursor,
+    MessageCursor, MessagePage,
 };
 use crate::performance::system_performance_profile;
 use crate::source::{PreparedSource, SourceKind, prepare_source_reporting};
@@ -163,6 +168,174 @@ impl NativeSession {
         self.catalog.clear_active_job("search")?;
         Ok(Some(result?))
     }
+
+    fn export_conversation<W: Write>(
+        &mut self,
+        params: &ExportConversationParams,
+        request: &Request,
+        protocol_output: &mut W,
+    ) -> Result<ConversationExportReport> {
+        if !matches!(params.source.as_str(), "line" | "square") {
+            anyhow::bail!("conversation source must be `line` or `square`");
+        }
+        let mut chat = match params.source.as_str() {
+            "line" => self.database.chat_for_cleanup(params.chat_pk)?,
+            "square" => self
+                .square_database
+                .as_ref()
+                .context("LineSquare.sqlite is not available")?
+                .chat_for_cleanup(params.chat_pk)?,
+            _ => unreachable!(),
+        };
+        if params.source == "line" {
+            self.database.enrich_chat_titles(
+                std::slice::from_mut(&mut chat),
+                self.unified_group_database.as_ref(),
+                self.square_database.as_ref(),
+            )?;
+        }
+
+        let output_parent = params
+            .output
+            .parent()
+            .context("conversation output has no parent directory")?
+            .canonicalize()
+            .context("conversation output parent does not exist")?;
+        let output_name = params
+            .output
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+            .context("conversation output has an invalid file name")?;
+        if !output_name.to_ascii_lowercase().ends_with(".zip") {
+            anyhow::bail!("conversation output must be a .zip file");
+        }
+        let output_path = output_parent.join(output_name);
+        if output_path.exists() {
+            anyhow::bail!("conversation output already exists");
+        }
+        if self.prepared.report.kind == SourceKind::Directory {
+            let source = self.prepared.original_path.canonicalize()?;
+            if output_path.starts_with(source) {
+                anyhow::bail!("conversation output cannot be inside the selected source");
+            }
+        }
+        let partial = PathBuf::from(format!("{}.partial", output_path.display()));
+        if partial.exists() {
+            anyhow::bail!("partial conversation output already exists; remove it before retrying");
+        }
+
+        if self.prepared.report.kind != SourceKind::Sqlite && !self.catalog_source_verified {
+            let current = self
+                .catalog
+                .source_matches_current(&self.prepared.original_path, self.prepared.report.kind)?;
+            self.catalog_source_verified = current;
+            if !current {
+                anyhow::bail!(
+                    "source changed since the last catalog scan; rescan the backup before exporting"
+                );
+            }
+        }
+
+        let result = (|| -> Result<ConversationExportReport> {
+            let file = File::create(&partial).with_context(|| {
+                format!(
+                    "failed to create conversation export: {}",
+                    partial.display()
+                )
+            })?;
+            let mut archive = ZipWriter::new(file).set_auto_large_file();
+            let total_messages = chat.message_count.max(0) as u64;
+            let mut progress = ConversationExportProgress {
+                total_messages,
+                ..ConversationExportProgress::default()
+            };
+            write_conversation_progress(protocol_output, request, "準備完整討論串", progress)?;
+
+            let attachment_progress = self.catalog.write_conversation_attachments(
+                &self.prepared.original_path,
+                self.prepared.report.kind,
+                &params.source,
+                params.chat_pk,
+                &mut archive,
+                |update| {
+                    progress.processed_attachments = update.processed_files;
+                    progress.total_attachments = update.total_files;
+                    progress.processed_bytes = update.processed_bytes;
+                    progress.total_bytes = update.total_bytes;
+                    let _ =
+                        write_conversation_progress(protocol_output, request, "匯出附件", progress);
+                },
+            )?;
+
+            archive.start_file(
+                "index.html",
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )?;
+            write_html_start(&mut archive, &chat)?;
+            let mut cursor = None;
+            let mut last_cursor = None;
+            let mut exported_messages = 0_u64;
+            loop {
+                let mut page = match params.source.as_str() {
+                    "line" => self.database.list_messages_for_account(
+                        params.chat_pk,
+                        cursor,
+                        1_000,
+                        self.prepared.account_id.as_deref(),
+                    )?,
+                    "square" => self
+                        .square_database
+                        .as_ref()
+                        .context("LineSquare.sqlite is not available")?
+                        .list_messages(
+                            params.chat_pk,
+                            cursor,
+                            1_000,
+                            self.prepared.account_id.as_deref(),
+                        )?,
+                    _ => unreachable!(),
+                };
+                self.catalog
+                    .enrich_messages_with_attachments(&mut page.items)?;
+                for message in &page.items {
+                    write_message(&mut archive, message)?;
+                }
+                exported_messages = exported_messages.saturating_add(page.items.len() as u64);
+                progress.processed_messages = exported_messages;
+                write_conversation_progress(protocol_output, request, "寫入完整討論串", progress)?;
+                let next_cursor = page.next_cursor;
+                if next_cursor.is_none() {
+                    break;
+                }
+                if next_cursor == last_cursor {
+                    anyhow::bail!("conversation pagination did not advance");
+                }
+                last_cursor = next_cursor;
+                cursor = next_cursor;
+            }
+            write_html_end(&mut archive)?;
+            let output_file = archive.finish()?;
+            output_file.sync_all()?;
+            drop(output_file);
+            fs::rename(&partial, &output_path).with_context(|| {
+                format!(
+                    "failed to finalize conversation export: {}",
+                    output_path.display()
+                )
+            })?;
+            Ok(ConversationExportReport {
+                output_name: output_name.to_string(),
+                messages: exported_messages,
+                attachments: attachment_progress.processed_files,
+                attachment_bytes: attachment_progress.processed_bytes,
+            })
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        result
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -303,6 +476,34 @@ struct ExportAttachmentsParams {
     images_only: bool,
     #[serde(default)]
     include_thumbnails: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportFilteredAttachmentsParams {
+    output: PathBuf,
+    #[serde(default)]
+    kind: Option<AttachmentKind>,
+    #[serde(default)]
+    search: Option<String>,
+    #[serde(default)]
+    include_chats: Vec<String>,
+    #[serde(default)]
+    exclude_chats: Vec<String>,
+    #[serde(default)]
+    include_categories: Vec<String>,
+    #[serde(default)]
+    exclude_categories: Vec<String>,
+    #[serde(default)]
+    include_thumbnails: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportConversationParams {
+    output: PathBuf,
+    source: String,
+    chat_pk: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -815,6 +1016,7 @@ fn handle_request<W: Write>(
                 ExportOptions {
                     images_only: params.images_only,
                     include_thumbnails: params.include_thumbnails,
+                    enforce_path_limit: true,
                 },
                 |progress| {
                     let _ = write_export_progress(
@@ -827,6 +1029,69 @@ fn handle_request<W: Write>(
                 },
             );
             session.catalog.clear_active_job("export")?;
+            Ok(serde_json::to_value(result?)?)
+        }
+        "exportAttachmentsFiltered" => {
+            let params: ExportFilteredAttachmentsParams = parse_params(request)?;
+            let request_id = request.id.clone();
+            let job_id = request.job_id.clone();
+            if !session.catalog_source_verified {
+                write_export_progress(
+                    output,
+                    &request_id,
+                    job_id.as_deref(),
+                    "驗證來源備份",
+                    crate::model::ExportProgress::default(),
+                )?;
+                let current = session.catalog.source_matches_current(
+                    &session.prepared.original_path,
+                    session.prepared.report.kind,
+                )?;
+                session.catalog_source_verified = current;
+                if !current {
+                    anyhow::bail!(
+                        "source changed since the last catalog scan; rescan the backup before exporting"
+                    );
+                }
+            }
+            session
+                .catalog
+                .set_active_job("export", request.job_id.as_deref())?;
+            let result = session.catalog.export_filtered_attachments(
+                &session.prepared.original_path,
+                session.prepared.report.kind,
+                params.kind,
+                params.search.as_deref(),
+                &params.include_chats,
+                &params.exclude_chats,
+                &params.include_categories,
+                &params.exclude_categories,
+                &params.output,
+                ExportOptions {
+                    images_only: false,
+                    include_thumbnails: params.include_thumbnails,
+                    enforce_path_limit: false,
+                },
+                |progress| {
+                    let _ = write_export_progress(
+                        output,
+                        &request_id,
+                        job_id.as_deref(),
+                        "匯出附件",
+                        progress,
+                    );
+                },
+            );
+            session.catalog.clear_active_job("export")?;
+            Ok(serde_json::to_value(result?)?)
+        }
+        "exportConversation" => {
+            let params: ExportConversationParams = parse_params(request)?;
+            session
+                .catalog
+                .set_active_job("conversation-export", request.job_id.as_deref())?;
+            let result = session.export_conversation(&params, request, output);
+            session.catalog.clear_active_job("conversation-export")?;
             Ok(serde_json::to_value(result?)?)
         }
         "setAttachmentMarked" => {
@@ -1584,6 +1849,29 @@ fn write_export_progress<W: Write>(
             "processedBytes": progress.processed_bytes,
             "totalBytes": progress.total_bytes,
             "skippedFiles": progress.skipped_files,
+        }),
+    )
+}
+
+fn write_conversation_progress<W: Write>(
+    output: &mut W,
+    request: &Request,
+    phase: &str,
+    progress: ConversationExportProgress,
+) -> Result<()> {
+    write_json_line(
+        output,
+        &json!({
+            "event": "conversationExportProgress",
+            "requestId": request.id,
+            "jobId": request.job_id,
+            "phase": phase,
+            "processedMessages": progress.processed_messages,
+            "totalMessages": progress.total_messages,
+            "processedAttachments": progress.processed_attachments,
+            "totalAttachments": progress.total_attachments,
+            "processedBytes": progress.processed_bytes,
+            "totalBytes": progress.total_bytes,
         }),
     )
 }

@@ -379,6 +379,7 @@ test("supports reversible category-wide actions with locked mutation progress", 
 });
 
 test("supports bounded image and attachment exports", () => {
+  assert.match(html, /id="export-chat-conversation"/);
   assert.match(html, /id="export-chat-images"/);
   assert.match(html, /id="export-chat-attachments"/);
   assert.match(renderer, /function exportAttachmentSelection\(paths, options = \{\}\)/);
@@ -395,6 +396,15 @@ test("supports bounded image and attachment exports", () => {
   assert.match(main, /LINE-Cheater-Export-/);
   assert.match(preload, /"exportProgress"/);
   assert.match(preload, /chooseExportOutput()/);
+  assert.match(renderer, /function exportCurrentConversation\(\)/);
+  assert.match(renderer, /provider\.exportConversation\(/);
+  assert.match(renderer, /從最早一則開始讀取全部訊息/);
+  assert.match(renderer, /bridge\.on\("conversationExportProgress"/);
+  assert.match(main, /"exportConversation"/);
+  assert.match(main, /choose-conversation-output/);
+  assert.match(main, /conversationOutputTokens/);
+  assert.match(preload, /"conversationExportProgress"/);
+  assert.match(preload, /chooseConversationOutput()/);
 });
 
 test("uses an accessible shared modal for every confirmation", () => {

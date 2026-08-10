@@ -11,6 +11,7 @@ const eventNames = new Set([
   "catalogContextProgress",
   "cleanupMutationProgress",
   "exportProgress",
+  "conversationExportProgress",
   "duplicateHashProgress",
   "candidateProgress"
 ]);
@@ -25,6 +26,9 @@ contextBridge.exposeInMainWorld("lineNativeBridge", Object.freeze({
   },
   chooseExportOutput() {
     return ipcRenderer.invoke("line-native:choose-export-output");
+  },
+  chooseConversationOutput() {
+    return ipcRenderer.invoke("line-native:choose-conversation-output");
   },
   discardCandidateOutput(token) {
     if (typeof token !== "string" || !token) {

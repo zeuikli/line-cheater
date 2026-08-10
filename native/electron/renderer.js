@@ -9,6 +9,42 @@ let chatPageNumber = 1;
 let chatLoading = false;
 let chatRequestGeneration = 0;
 let chatRetryDirection = "initial";
+let chatSearchQuery = "";
+let allChatsCache = null;
+let allChatsCacheGeneration = -1;
+let allChatsLoading = false;
+let chatSearchGeneration = 0;
+let chatSearchDebounce = null;
+let attachmentsLoaded = false;
+let attachmentsLoading = false;
+let allAttachments = [];
+let attachmentsGeneration = -1;
+let attachmentFiltered = [];
+let attachmentPage = 1;
+let attachmentSearchDebounce = null;
+const ATTACHMENT_PAGE_SIZE = 200;
+const attachmentFilter = {
+  search: "",
+  chatMode: "include",
+  chats: new Set(),
+  typeMode: "include",
+  types: new Set(),
+  includeThumbnails: false,
+  sort: "size-desc"
+};
+const ATTACHMENT_CATEGORY_LABELS = {
+  image: "照片",
+  video: "影片",
+  voice: "語音",
+  file: "檔案",
+  sticker: "貼圖",
+  location: "位置",
+  link: "連結",
+  other: "其他"
+};
+const ATTACHMENT_CATEGORY_ORDER = [
+  "image", "video", "voice", "file", "sticker", "location", "link", "other"
+];
 let messageCursor = null;
 let messageBeforeCursor = null;
 let messagePageNumber = 1;
@@ -90,6 +126,21 @@ const elements = {
   cleanupView: document.querySelector("#cleanup-view"),
   duplicatesView: document.querySelector("#duplicates-view"),
   advancedView: document.querySelector("#advanced-view"),
+  attachmentsView: document.querySelector("#attachments-view"),
+  attachmentSort: document.querySelector("#attachment-sort"),
+  attachmentChat: document.querySelector("#attachment-chat"),
+  attachmentChatClear: document.querySelector("#attachment-chat-clear"),
+  attachmentChatMode: document.querySelector("#attachment-chat-mode"),
+  attachmentTypeMode: document.querySelector("#attachment-type-mode"),
+  attachmentIncludeThumbnails: document.querySelector("#attachment-include-thumbnails"),
+  attachmentSearch: document.querySelector("#attachment-search"),
+  attachmentTypeChips: document.querySelector("#attachment-type-chips"),
+  attachmentSummary: document.querySelector("#attachment-summary"),
+  exportFilteredAttachments: document.querySelector("#export-filtered-attachments"),
+  attachmentList: document.querySelector("#attachment-list"),
+  attachmentPageInfo: document.querySelector("#attachment-page-info"),
+  attachmentPrevious: document.querySelector("#attachment-previous"),
+  attachmentNext: document.querySelector("#attachment-next"),
   advancedMode: document.querySelector("#advanced-mode"),
   advancedModeState: document.querySelector("#advanced-mode-state"),
   advancedLocked: document.querySelector("#advanced-locked"),
@@ -108,11 +159,14 @@ const elements = {
   status: document.querySelector("#status"),
   sessionSummary: document.querySelector("#session-summary"),
   chats: document.querySelector("#chats"),
+  chatSearch: document.querySelector("#chat-search"),
+  chatPagination: document.querySelector(".chat-pagination"),
   chatListStatus: document.querySelector("#chat-list-status"),
   retryChats: document.querySelector("#retry-chats"),
   messages: document.querySelector("#messages"),
   selectedChatTitle: document.querySelector("#selected-chat-title"),
   selectedChatMeta: document.querySelector("#selected-chat-meta"),
+  exportChatConversation: document.querySelector("#export-chat-conversation"),
   exportChatImages: document.querySelector("#export-chat-images"),
   exportChatAttachments: document.querySelector("#export-chat-attachments"),
   messageStatus: document.querySelector("#message-status"),
@@ -301,16 +355,18 @@ function renderSessionSummary(info) {
 }
 
 function setWorkspaceView(view) {
-  if (!["browse", "cleanup", "duplicates", "advanced"].includes(view)) return;
+  if (!["browse", "attachments", "cleanup", "duplicates", "advanced"].includes(view)) return;
   if (view === "duplicates" && !advancedMode) return;
   activeWorkspaceView = view;
   const labels = {
     browse: ["瀏覽", "查看聊天室與訊息內容"],
+    attachments: ["附件", "依大小、類型與聊天室篩選並匯出"],
     cleanup: ["清理", "審核附件並建立瘦身備份"],
     duplicates: ["重複附件", "找出完全相同、可安全審核的副本"],
     advanced: ["進階", "清理 SQLite 與隱藏聊天室"]
   };
   elements.browseView.classList.toggle("hidden", view !== "browse");
+  elements.attachmentsView.classList.toggle("hidden", view !== "attachments");
   elements.cleanupView.classList.toggle("hidden", view !== "cleanup");
   elements.duplicatesView.classList.toggle("hidden", view !== "duplicates");
   elements.advancedView.classList.toggle("hidden", view !== "advanced");
@@ -320,6 +376,9 @@ function setWorkspaceView(view) {
     const active = button.dataset.view === view;
     button.classList.toggle("active", active);
     button.toggleAttribute("aria-current", active);
+  }
+  if (view === "attachments" && provider && !attachmentsLoaded && !attachmentsLoading) {
+    void loadAttachments();
   }
   if (view === "cleanup" && provider && !cleanupPage) void loadCleanupPage();
   if (view === "duplicates" && provider && duplicateScanComplete && !duplicatePage) {
@@ -411,6 +470,8 @@ function resetAfterCandidateBuild() {
   selectedChatGeneration += 1;
   messageRenderGeneration += 1;
   provider = null;
+  resetChatSearch();
+  resetAttachments();
   activeSourceBytes = 0;
   selectedSourceKind = null;
   selectedChatPk = null;
@@ -740,6 +801,31 @@ function exportCurrentChat(imagesOnly) {
     source: selectedChat.source || "line",
     chatPk: selectedChatPk
   });
+}
+
+async function exportCurrentConversation() {
+  if (!provider || !selectedChat || selectedChatPk === null) return;
+  try {
+    const output = await bridge.chooseConversationOutput();
+    if (!output) return;
+    const result = await runExportJob({
+      title: "正在輸出完整討論串",
+      message: "正在從最早一則開始讀取全部訊息，並將 HTML 與附件寫入 ZIP。",
+      successMessage: "完整討論串輸出完成。"
+    }, () => provider.exportConversation({
+      output: output.token,
+      source: selectedChat.source || "line",
+      chatPk: selectedChatPk
+    }));
+    setStatus(
+      `已輸出 ${Number(result.messages || 0).toLocaleString()} 則訊息與 ` +
+      `${Number(result.attachments || 0).toLocaleString()} 個附件。` +
+      `檔案：${result.outputName || output.displayName}`,
+      false
+    );
+  } catch (error) {
+    reportCleanupMutationError(error);
+  }
 }
 
 function closeRestoreChecklist(confirmed) {
@@ -1078,6 +1164,7 @@ function setMessagePanelBusy(isBusy) {
   const exportDisabled = isBusy || !selectedChat || selectedSourceKind === "sqlite" || exportInProgress;
   elements.exportChatImages.disabled = exportDisabled;
   elements.exportChatAttachments.disabled = exportDisabled;
+  elements.exportChatConversation.disabled = isBusy || !selectedChat || exportInProgress;
 }
 
 function renderChatLoadError() {
@@ -1121,6 +1208,8 @@ async function openSource(kind) {
     chatPageNumber = messagePageNumber = 1;
     chatRetryDirection = messageRetryDirection = "initial";
     chatLoading = messageLoading = false;
+    resetChatSearch();
+    resetAttachments();
     selectedChatPk = activeSearch = selectedChat = null;
     advancedReport = null;
     duplicateLoading = false;
@@ -1189,6 +1278,7 @@ async function openSource(kind) {
     elements.nextMessages.disabled = true;
     elements.exportChatImages.disabled = true;
     elements.exportChatAttachments.disabled = true;
+    elements.exportChatConversation.disabled = true;
     const info = await provider.sessionInfo();
     activeSourceBytes = Number(info.source.sourceBytes) || 0;
     const sourceName = sourceDisplayName(info.source.sourcePath, info.source.kind);
@@ -1316,6 +1406,11 @@ function renderChatItem(chat) {
 
 async function loadChats(direction = "initial") {
   if (!provider || (chatLoading && direction !== "initial")) return;
+  if (chatSearchQuery && direction !== "initial") {
+    allChatsCache = null;
+    await applyChatSearch();
+    return;
+  }
   const currentProvider = provider;
   const currentSourceGeneration = sourceGeneration;
   const requestGeneration = ++chatRequestGeneration;
@@ -1350,6 +1445,7 @@ async function loadChats(direction = "initial") {
         `${chatCursor ? "可往後翻頁" : "已是最後頁"}`
       : "沒有可顯示的聊天室。";
     setRetryVisible(elements.retryChats, false);
+    elements.chatSearch.disabled = false;
     succeeded = true;
   } catch (error) {
     if (requestGeneration !== chatRequestGeneration ||
@@ -1367,6 +1463,476 @@ async function loadChats(direction = "initial") {
       }
     }
   }
+}
+
+async function loadAllChats() {
+  const currentProvider = provider;
+  const gen = sourceGeneration;
+  if (allChatsCache && allChatsCacheGeneration === gen) return allChatsCache;
+  const items = [];
+  let cursor = null;
+  for (let guard = 0; guard < 1000; guard += 1) {
+    const page = await currentProvider.listChats({ limit: 100, cursor });
+    if (currentProvider !== provider || gen !== sourceGeneration) return null;
+    items.push(...page.items);
+    cursor = page.nextCursor;
+    if (!cursor) break;
+  }
+  allChatsCache = items;
+  allChatsCacheGeneration = gen;
+  return items;
+}
+
+async function applyChatSearch() {
+  if (!provider) return;
+  const query = chatSearchQuery;
+  const requestGeneration = ++chatSearchGeneration;
+  if (!query) {
+    elements.chatPagination.classList.remove("hidden");
+    await loadChats(null);
+    return;
+  }
+  elements.chatPagination.classList.add("hidden");
+  elements.chatListStatus.classList.remove("error");
+  elements.chatListStatus.textContent = "正在搜尋聊天室…";
+  elements.chats.setAttribute("aria-busy", "true");
+  allChatsLoading = true;
+  try {
+    const all = await loadAllChats();
+    if (requestGeneration !== chatSearchGeneration) return;
+    if (!all) return;
+    const needle = query.toLowerCase();
+    const matches = all.filter(
+      (chat) => String(chat.title || "").toLowerCase().includes(needle)
+    );
+    if (matches.length) {
+      replaceChildren(elements.chats, matches, renderChatItem);
+    } else {
+      elements.chats.replaceChildren(emptyState(`沒有名稱包含「${query}」的聊天室。`));
+    }
+    elements.chatListStatus.textContent =
+      `${matches.length.toLocaleString()} 個符合「${query}」的聊天室` +
+      ` · 共 ${all.length.toLocaleString()} 個`;
+  } catch (error) {
+    if (requestGeneration !== chatSearchGeneration) return;
+    elements.chatListStatus.classList.add("error");
+    elements.chatListStatus.textContent = `搜尋聊天室失敗：${error.message}`;
+  } finally {
+    if (requestGeneration === chatSearchGeneration) {
+      allChatsLoading = false;
+      elements.chats.removeAttribute("aria-busy");
+    }
+  }
+}
+
+function handleChatSearchInput() {
+  chatSearchQuery = elements.chatSearch.value.trim();
+  if (chatSearchDebounce) clearTimeout(chatSearchDebounce);
+  chatSearchDebounce = setTimeout(() => {
+    chatSearchDebounce = null;
+    void applyChatSearch();
+  }, 200);
+}
+
+function resetChatSearch() {
+  if (chatSearchDebounce) {
+    clearTimeout(chatSearchDebounce);
+    chatSearchDebounce = null;
+  }
+  chatSearchQuery = "";
+  chatSearchGeneration += 1;
+  allChatsCache = null;
+  allChatsCacheGeneration = -1;
+  allChatsLoading = false;
+  if (elements.chatSearch) {
+    elements.chatSearch.value = "";
+    elements.chatSearch.disabled = true;
+  }
+  if (elements.chatPagination) elements.chatPagination.classList.remove("hidden");
+}
+
+function attachmentCategory(contentType) {
+  switch (Number(contentType)) {
+    case 1: case 16: case 112: return "image";
+    case 2: case 17: return "video";
+    case 3: return "voice";
+    case 4: case 14: return "file";
+    case 5: case 101: return "sticker";
+    case 100: return "location";
+    case 107: return "link";
+    default: return "other";
+  }
+}
+
+function attachmentBasename(path) {
+  const parts = String(path || "").split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(path || "");
+}
+
+function attachmentTime(attachment) {
+  if (attachment.context && attachment.context.timestamp) {
+    return Number(attachment.context.timestamp) || 0;
+  }
+  return Math.floor((Number(attachment.modifiedNs) || 0) / 1e6);
+}
+
+function attachmentChatKey(attachment) {
+  return attachment.context
+    ? `${attachment.context.source}:${attachment.context.chatPk}`
+    : "";
+}
+
+function resetAttachments() {
+  attachmentsLoaded = false;
+  attachmentsLoading = false;
+  allAttachments = [];
+  attachmentsGeneration = -1;
+  attachmentFiltered = [];
+  attachmentPage = 1;
+  attachmentFilter.search = "";
+  attachmentFilter.chatMode = "include";
+  attachmentFilter.chats = new Set();
+  attachmentFilter.typeMode = "include";
+  attachmentFilter.types = new Set();
+  attachmentFilter.includeThumbnails = false;
+  attachmentFilter.sort = "size-desc";
+  if (attachmentSearchDebounce) {
+    clearTimeout(attachmentSearchDebounce);
+    attachmentSearchDebounce = null;
+  }
+  if (elements.attachmentSearch) elements.attachmentSearch.value = "";
+  if (elements.attachmentSort) elements.attachmentSort.value = "size-desc";
+  if (elements.attachmentChatMode) elements.attachmentChatMode.value = "include";
+  if (elements.attachmentTypeMode) elements.attachmentTypeMode.value = "include";
+  if (elements.attachmentIncludeThumbnails) elements.attachmentIncludeThumbnails.checked = false;
+  if (elements.attachmentChat) elements.attachmentChat.replaceChildren();
+  if (elements.attachmentTypeChips) elements.attachmentTypeChips.replaceChildren();
+  if (elements.attachmentList) {
+    elements.attachmentList.replaceChildren(emptyState("載入備份後顯示附件。"));
+  }
+  if (elements.attachmentSummary) {
+    elements.attachmentSummary.classList.remove("error");
+    elements.attachmentSummary.textContent = "載入備份後顯示附件。";
+  }
+  if (elements.exportFilteredAttachments) elements.exportFilteredAttachments.disabled = true;
+  if (elements.attachmentPrevious) elements.attachmentPrevious.disabled = true;
+  if (elements.attachmentNext) elements.attachmentNext.disabled = true;
+  if (elements.attachmentPageInfo) elements.attachmentPageInfo.textContent = "第 1 頁";
+}
+
+async function loadAttachments() {
+  if (!provider || attachmentsLoading) return;
+  if (selectedSourceKind === "sqlite") {
+    elements.attachmentList.replaceChildren(
+      emptyState("直接 Line.sqlite 來源沒有可瀏覽的附件檔案。")
+    );
+    elements.attachmentSummary.textContent = "此來源沒有附件檔案。";
+    return;
+  }
+  attachmentsLoading = true;
+  const gen = sourceGeneration;
+  const currentProvider = provider;
+  elements.attachmentSummary.classList.remove("error");
+  elements.attachmentSummary.textContent = "正在載入附件…";
+  elements.attachmentList.setAttribute("aria-busy", "true");
+  try {
+    const items = [];
+    let cursor = null;
+    for (let guard = 0; guard < 100000; guard += 1) {
+      const page = await currentProvider.listAttachments({ limit: 500, cursor });
+      if (gen !== sourceGeneration || currentProvider !== provider) return;
+      items.push(...page.items);
+      cursor = page.nextCursor;
+      elements.attachmentSummary.textContent =
+        `正在載入附件… 已讀取 ${items.length.toLocaleString()} 個`;
+      if (!cursor) break;
+    }
+    allAttachments = items;
+    attachmentsGeneration = gen;
+    attachmentsLoaded = true;
+    buildAttachmentChatOptions();
+    applyAttachmentFilters();
+  } catch (error) {
+    if (gen !== sourceGeneration || currentProvider !== provider) return;
+    elements.attachmentSummary.classList.add("error");
+    elements.attachmentSummary.textContent = `載入附件失敗：${error.message}`;
+  } finally {
+    if (gen === sourceGeneration && currentProvider === provider) {
+      attachmentsLoading = false;
+      elements.attachmentList.removeAttribute("aria-busy");
+    }
+  }
+}
+
+function buildAttachmentChatOptions() {
+  const map = new Map();
+  for (const attachment of allAttachments) {
+    if (!attachment.context) continue;
+    const key = attachmentChatKey(attachment);
+    const label = attachment.context.chatTitle || attachment.chatHint || key;
+    const entry = map.get(key) || { label, count: 0 };
+    entry.count += 1;
+    map.set(key, entry);
+  }
+  const entries = [...map.entries()].sort((a, b) => b[1].count - a[1].count);
+  const container = elements.attachmentChat;
+  const available = new Set(entries.map(([key]) => key));
+  // Drop selections that no longer exist (e.g. after toggling thumbnails).
+  for (const key of [...attachmentFilter.chats]) {
+    if (!available.has(key)) attachmentFilter.chats.delete(key);
+  }
+  container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "attachment-chat-empty";
+    empty.textContent = "沒有可篩選的聊天室。";
+    container.append(empty);
+    return;
+  }
+  for (const [key, entry] of entries) {
+    const option = document.createElement("label");
+    option.className = "attachment-chat-option";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = key;
+    checkbox.checked = attachmentFilter.chats.has(key);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) attachmentFilter.chats.add(key);
+      else attachmentFilter.chats.delete(key);
+      applyAttachmentFilters();
+    });
+    const text = document.createElement("span");
+    text.textContent = `${entry.label}（${entry.count.toLocaleString()}）`;
+    text.title = entry.label;
+    option.append(checkbox, text);
+    container.append(option);
+  }
+}
+
+function attachmentPassesNonType(attachment, filter) {
+  if (!filter.includeThumbnails && attachment.kind === "thumbnail") return false;
+  if (filter.chats.size) {
+    const inSet = filter.chats.has(attachmentChatKey(attachment));
+    if (filter.chatMode === "include" ? !inSet : inSet) return false;
+  }
+  if (filter.search) {
+    if (!attachment.path.toLowerCase().includes(filter.search)) return false;
+  }
+  return true;
+}
+
+function attachmentComparator(sort) {
+  switch (sort) {
+    case "size-asc":
+      return (a, b) => a.bytes - b.bytes || a.id - b.id;
+    case "date-desc":
+      return (a, b) => attachmentTime(b) - attachmentTime(a) || b.bytes - a.bytes;
+    case "date-asc":
+      return (a, b) => attachmentTime(a) - attachmentTime(b) || a.bytes - b.bytes;
+    case "size-desc":
+    default:
+      return (a, b) => b.bytes - a.bytes || a.id - b.id;
+  }
+}
+
+function applyAttachmentFilters() {
+  const filter = attachmentFilter;
+  const base = allAttachments.filter((attachment) =>
+    attachmentPassesNonType(attachment, filter)
+  );
+  const counts = new Map();
+  for (const attachment of base) {
+    const category = attachmentCategory(
+      attachment.context ? attachment.context.contentType : null
+    );
+    counts.set(category, (counts.get(category) || 0) + 1);
+  }
+  const filtered = filter.types.size
+    ? base.filter((attachment) => {
+        const category = attachmentCategory(
+          attachment.context ? attachment.context.contentType : null
+        );
+        const inSet = filter.types.has(category);
+        return filter.typeMode === "include" ? inSet : !inSet;
+      })
+    : base;
+  filtered.sort(attachmentComparator(filter.sort));
+  attachmentFiltered = filtered;
+  attachmentPage = 1;
+  renderAttachmentTypeChips(counts);
+  renderAttachmentPage();
+  updateAttachmentExportButton();
+}
+
+function renderAttachmentTypeChips(counts) {
+  const container = elements.attachmentTypeChips;
+  container.replaceChildren();
+  for (const category of ATTACHMENT_CATEGORY_ORDER) {
+    const count = counts.get(category) || 0;
+    if (!count) continue;
+    const chip = document.createElement("button");
+    chip.type = "button";
+    const active = attachmentFilter.types.has(category);
+    chip.className = `attachment-chip${active ? " active" : ""}`;
+    chip.setAttribute("aria-pressed", String(active));
+    chip.textContent = `${ATTACHMENT_CATEGORY_LABELS[category]}（${count.toLocaleString()}）`;
+    chip.addEventListener("click", () => {
+      if (attachmentFilter.types.has(category)) attachmentFilter.types.delete(category);
+      else attachmentFilter.types.add(category);
+      applyAttachmentFilters();
+    });
+    container.append(chip);
+  }
+}
+
+async function previewAttachment(attachment, trigger) {
+  if (!provider) return;
+  try {
+    const url = await bridge.attachmentPreviewUrl(attachment.path);
+    if (!url) {
+      setStatus("無法預覽這個附件。", true);
+      return;
+    }
+    showImageModal(url, attachmentBasename(attachment.path), trigger || null);
+  } catch (error) {
+    setStatus(`預覽失敗：${error.message}`, true);
+  }
+}
+
+function renderAttachmentRow(attachment) {
+  const row = document.createElement("div");
+  row.className = "attachment-row";
+  row.setAttribute("role", "listitem");
+  const category = attachmentCategory(
+    attachment.context ? attachment.context.contentType : null
+  );
+  const type = document.createElement("span");
+  type.className = `attachment-type type-${category}`;
+  type.textContent = ATTACHMENT_CATEGORY_LABELS[category];
+  const main = document.createElement("span");
+  main.className = "attachment-main";
+  const name = document.createElement("span");
+  name.className = "attachment-name";
+  name.textContent = attachmentBasename(attachment.path);
+  name.title = attachment.path;
+  const sub = document.createElement("span");
+  sub.className = "attachment-sub";
+  const chat = attachment.context
+    ? attachment.context.chatTitle || attachment.chatHint || "（未命名聊天室）"
+    : "（未引用）";
+  sub.textContent = attachment.kind === "thumbnail" ? `${chat} · 縮圖` : chat;
+  main.append(name, sub);
+  const size = document.createElement("span");
+  size.className = "attachment-size";
+  size.textContent = formatBytes(attachment.bytes);
+  const date = document.createElement("span");
+  date.className = "attachment-date";
+  date.textContent = formatTimestamp(attachmentTime(attachment));
+  row.append(type, main, size, date);
+  if (category === "image" && selectedSourceKind !== "sqlite") {
+    row.classList.add("previewable");
+    row.tabIndex = 0;
+    row.title = "點擊預覽圖片";
+    row.addEventListener("click", () => void previewAttachment(attachment, row));
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        void previewAttachment(attachment, row);
+      }
+    });
+  }
+  return row;
+}
+
+function renderAttachmentPage() {
+  const total = attachmentFiltered.length;
+  const totalBytes = attachmentFiltered.reduce((sum, item) => sum + item.bytes, 0);
+  const pages = Math.max(1, Math.ceil(total / ATTACHMENT_PAGE_SIZE));
+  if (attachmentPage > pages) attachmentPage = pages;
+  const start = (attachmentPage - 1) * ATTACHMENT_PAGE_SIZE;
+  const slice = attachmentFiltered.slice(start, start + ATTACHMENT_PAGE_SIZE);
+  if (!slice.length) {
+    elements.attachmentList.replaceChildren(emptyState("沒有符合篩選條件的附件。"));
+  } else {
+    replaceChildren(elements.attachmentList, slice, renderAttachmentRow);
+  }
+  elements.attachmentPageInfo.textContent = `第 ${attachmentPage} / ${pages} 頁`;
+  elements.attachmentPrevious.disabled = attachmentPage <= 1;
+  elements.attachmentNext.disabled = attachmentPage >= pages;
+  elements.attachmentSummary.classList.remove("error");
+  elements.attachmentSummary.textContent =
+    `${total.toLocaleString()} 個附件 · 合計 ${formatBytes(totalBytes)}`;
+}
+
+function updateAttachmentExportButton() {
+  elements.exportFilteredAttachments.disabled =
+    !provider ||
+    selectedSourceKind === "sqlite" ||
+    exportInProgress ||
+    attachmentFiltered.length === 0;
+}
+
+function changeAttachmentPage(delta) {
+  const pages = Math.max(1, Math.ceil(attachmentFiltered.length / ATTACHMENT_PAGE_SIZE));
+  const next = Math.min(pages, Math.max(1, attachmentPage + delta));
+  if (next === attachmentPage) return;
+  attachmentPage = next;
+  renderAttachmentPage();
+}
+
+async function exportFilteredAttachmentsAction() {
+  if (!provider) {
+    setStatus("請先開啟備份。", true);
+    return;
+  }
+  if (selectedSourceKind === "sqlite") {
+    setStatus("直接 Line.sqlite 來源沒有可匯出的附件檔案。", true);
+    return;
+  }
+  if (!attachmentFiltered.length) return;
+  const filter = attachmentFilter;
+  const selectedTypes = [...filter.types];
+  const includeCategories = filter.typeMode === "include" ? selectedTypes : [];
+  const excludeCategories = filter.typeMode === "exclude" ? selectedTypes : [];
+  const selectedChats = [...filter.chats];
+  const includeChats = filter.chatMode === "include" ? selectedChats : [];
+  const excludeChats = filter.chatMode === "exclude" ? selectedChats : [];
+  const output = await bridge.chooseExportOutput();
+  if (!output) return;
+  try {
+    const result = await runExportJob({
+      title: "正在匯出附件",
+      message: "正在依照目前的排序與篩選，將附件串流複製到新的匯出資料夾。",
+      successMessage: "附件匯出完成。"
+    }, () => provider.exportAttachmentsFiltered({
+      output: output.token,
+      kind: filter.includeThumbnails ? null : "original",
+      search: filter.search || null,
+      includeChats,
+      excludeChats,
+      includeCategories,
+      excludeCategories,
+      includeThumbnails: filter.includeThumbnails
+    }));
+    const skipped = Number(result.skippedFiles) || 0;
+    const detail = skipped
+      ? `已匯出 ${Number(result.exportedFiles || 0).toLocaleString()} 個檔案，略過 ${skipped.toLocaleString()} 個。`
+      : `已匯出 ${Number(result.exportedFiles || 0).toLocaleString()} 個檔案。`;
+    setStatus(`${detail} 位置：${result.outputName || output.displayName}`, false);
+  } catch (error) {
+    reportCleanupMutationError(error);
+  } finally {
+    updateAttachmentExportButton();
+  }
+}
+
+function handleAttachmentSearchInput() {
+  if (attachmentSearchDebounce) clearTimeout(attachmentSearchDebounce);
+  attachmentSearchDebounce = setTimeout(() => {
+    attachmentSearchDebounce = null;
+    attachmentFilter.search = elements.attachmentSearch.value.trim().toLowerCase();
+    applyAttachmentFilters();
+  }, 200);
 }
 
 async function selectChat(chat) {
@@ -1394,6 +1960,7 @@ async function selectChat(chat) {
   elements.nextMessages.disabled = true;
   elements.exportChatImages.disabled = !selectedChat || selectedSourceKind === "sqlite";
   elements.exportChatAttachments.disabled = !selectedChat || selectedSourceKind === "sqlite";
+  elements.exportChatConversation.disabled = !selectedChat;
   await loadMessages("initial", selectionGeneration);
 }
 
@@ -3952,6 +4519,42 @@ for (const button of sidebarItems) {
     visibleItems[next].focus();
   });
 }
+elements.chatSearch.addEventListener("input", handleChatSearchInput);
+elements.chatSearch.addEventListener("search", handleChatSearchInput);
+elements.attachmentSort.addEventListener("change", () => {
+  attachmentFilter.sort = elements.attachmentSort.value;
+  applyAttachmentFilters();
+});
+elements.attachmentChatClear.addEventListener("click", () => {
+  if (!attachmentFilter.chats.size) return;
+  attachmentFilter.chats.clear();
+  for (const box of elements.attachmentChat.querySelectorAll("input[type=\"checkbox\"]")) {
+    box.checked = false;
+  }
+  applyAttachmentFilters();
+});
+elements.attachmentChatMode.addEventListener("change", () => {
+  attachmentFilter.chatMode = elements.attachmentChatMode.value === "exclude"
+    ? "exclude"
+    : "include";
+  applyAttachmentFilters();
+});
+elements.attachmentTypeMode.addEventListener("change", () => {
+  attachmentFilter.typeMode = elements.attachmentTypeMode.value === "exclude"
+    ? "exclude"
+    : "include";
+  applyAttachmentFilters();
+});
+elements.attachmentIncludeThumbnails.addEventListener("change", () => {
+  attachmentFilter.includeThumbnails = elements.attachmentIncludeThumbnails.checked;
+  buildAttachmentChatOptions();
+  applyAttachmentFilters();
+});
+elements.attachmentSearch.addEventListener("input", handleAttachmentSearchInput);
+elements.attachmentSearch.addEventListener("search", handleAttachmentSearchInput);
+elements.attachmentPrevious.addEventListener("click", () => changeAttachmentPage(-1));
+elements.attachmentNext.addEventListener("click", () => changeAttachmentPage(1));
+elements.exportFilteredAttachments.addEventListener("click", () => void exportFilteredAttachmentsAction());
 elements.previousChats.addEventListener("click", () => void loadChats("previous"));
 elements.nextChats.addEventListener("click", () => void loadChats("next"));
 elements.previousMessages.addEventListener("click", () => void loadMessages("previous"));
@@ -4055,6 +4658,7 @@ elements.clearSearch.addEventListener("click", () => {
 });
 elements.exportChatImages.addEventListener("click", () => void exportCurrentChat(true));
 elements.exportChatAttachments.addEventListener("click", () => void exportCurrentChat(false));
+elements.exportChatConversation.addEventListener("click", () => void exportCurrentConversation());
 elements.cleanupKind.addEventListener("change", updateCleanupFilter);
 elements.cleanupCategory.addEventListener("change", updateCleanupFilter);
 elements.cleanupSort.addEventListener("change", updateCleanupFilter);
@@ -4236,6 +4840,17 @@ bridge.on("exportProgress", (event) => {
     Number(event.totalBytes) || 0,
     event.phase || "匯出中",
     "bytes"
+  );
+});
+bridge.on("conversationExportProgress", (event) => {
+  if (elements.operationModal.classList.contains("hidden")) return;
+  const attachmentsPending = Number(event.totalAttachments) > 0 &&
+    Number(event.processedAttachments) < Number(event.totalAttachments);
+  updateOperationModalProgress(
+    attachmentsPending ? Number(event.processedBytes) || 0 : Number(event.processedMessages) || 0,
+    attachmentsPending ? Number(event.totalBytes) || 0 : Number(event.totalMessages) || 0,
+    event.phase || "輸出完整討論串",
+    attachmentsPending ? "bytes" : "則訊息"
   );
 });
 bridge.on("searchIndexProgress", (event) => {

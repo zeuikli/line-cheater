@@ -34,6 +34,8 @@ const allowedMethods = new Set([
   "scanCatalog",
   "listAttachments",
   "exportAttachments",
+  "exportAttachmentsFiltered",
+  "exportConversation",
   "setAttachmentMarked",
   "clearManualAttachmentPlan",
   "clearAllRemovalPlans",
@@ -73,7 +75,9 @@ const jobMethods = new Set([
   "setChatRemovalPlanned",
   "planAutomaticCleanup",
   "clearAdvancedCleanupPlan",
-  "exportAttachments"
+  "exportAttachments",
+  "exportAttachmentsFiltered",
+  "exportConversation"
 ]);
 const assetFiles = new Map([
   ["/assets/icon.png", path.join("assets", "icon.png")],
@@ -97,6 +101,7 @@ let closeConfirmationOpen = false;
 let closeConfirmed = false;
 const outputTokens = new Map();
 const exportOutputTokens = new Map();
+const conversationOutputTokens = new Map();
 const previewTokens = new Map();
 const MAX_PREVIEW_TOKENS = 128;
 const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
@@ -191,6 +196,7 @@ async function replaceSidecar(source) {
   }
   outputTokens.clear();
   exportOutputTokens.clear();
+  conversationOutputTokens.clear();
   previewTokens.clear();
   activeSource = path.resolve(source);
   const userDataPath = app.getPath("userData");
@@ -239,6 +245,7 @@ async function closeCompletedSession(client, workDir) {
   activeSource = null;
   outputTokens.clear();
   exportOutputTokens.clear();
+  conversationOutputTokens.clear();
   previewTokens.clear();
   const warnings = [];
   try {
@@ -277,9 +284,17 @@ function cleanCancelledOperation(operation) {
         retryDelay: 100
       });
     }
-    if (operation.method === "exportAttachments" && operation.output) {
+    if ((operation.method === "exportAttachments" ||
+         operation.method === "exportAttachmentsFiltered") && operation.output) {
       fs.rmSync(`${operation.output}.partial`, {
         recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100
+      });
+    }
+    if (operation.method === "exportConversation" && operation.output) {
+      fs.rmSync(`${operation.output}.partial`, {
         force: true,
         maxRetries: 10,
         retryDelay: 100
@@ -340,6 +355,25 @@ async function registerIpc() {
     const token = crypto.randomUUID();
     exportOutputTokens.set(token, directory);
     return { token, displayName: path.basename(directory) || directory };
+  });
+
+  ipcMain.handle("line-native:choose-conversation-output", async (event) => {
+    assertTrustedSender(event);
+    if (!sidecar || !activeSource) throw new Error("請先開啟並掃描備份。");
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: "輸出完整討論串",
+      defaultPath: "LINE-conversation.zip",
+      filters: [{ name: "ZIP 封存檔", extensions: ["zip"] }]
+    });
+    if (result.canceled || !result.filePath) return null;
+    const output = path.resolve(result.filePath);
+    const workDir = sessionWorkDir(app.getPath("userData"), activeSource);
+    if (outputFallsInsideSession(workDir, output)) {
+      throw new Error("討論串輸出不能位於 LINE Cheater 的本機快取內。");
+    }
+    const token = crypto.randomUUID();
+    conversationOutputTokens.set(token, output);
+    return { token, displayName: path.basename(output) };
   });
 
   ipcMain.handle("line-native:discard-candidate-output", async (event, token) => {
@@ -435,6 +469,7 @@ async function registerIpc() {
     const workDir = sessionWorkDir(userDataPath, activeSource);
     let candidateOutputToken = null;
     let exportOutputToken = null;
+    let conversationOutputToken = null;
     if (method === "buildCandidate") {
       const token = String(safeParams.output || "");
       const output = outputTokens.get(token);
@@ -446,7 +481,7 @@ async function registerIpc() {
       candidateOutputToken = token;
       safeParams.output = output;
     }
-    if (method === "exportAttachments") {
+    if (method === "exportAttachments" || method === "exportAttachmentsFiltered") {
       const token = String(safeParams.output || "");
       const baseDirectory = exportOutputTokens.get(token);
       if (!baseDirectory) throw new Error("附件匯出目的地授權已失效，請重新選擇資料夾。");
@@ -459,6 +494,17 @@ async function registerIpc() {
         baseDirectory,
         `LINE-Cheater-Export-${crypto.randomUUID()}`
       );
+    }
+    if (method === "exportConversation") {
+      const token = String(safeParams.output || "");
+      const output = conversationOutputTokens.get(token);
+      if (!output) throw new Error("討論串輸出授權已失效，請重新選擇位置。");
+      if (outputFallsInsideSession(workDir, output)) {
+        conversationOutputTokens.delete(token);
+        throw new Error("討論串輸出不能位於 LINE Cheater 的本機快取內。");
+      }
+      conversationOutputToken = token;
+      safeParams.output = output;
     }
     const client = sidecar;
     const jobId = jobMethods.has(method) ? crypto.randomUUID() : null;
@@ -473,8 +519,12 @@ async function registerIpc() {
     }
     try {
       const result = await client.request(method, safeParams, { jobId });
-      if (method === "exportAttachments") {
+      if (method === "exportAttachments" || method === "exportAttachmentsFiltered") {
         exportOutputTokens.delete(exportOutputToken);
+        return result;
+      }
+      if (method === "exportConversation") {
+        conversationOutputTokens.delete(conversationOutputToken);
         return result;
       }
       if (method !== "buildCandidate") return result;
@@ -485,6 +535,7 @@ async function registerIpc() {
     } catch (error) {
       if (candidateOutputToken) outputTokens.delete(candidateOutputToken);
       if (exportOutputToken) exportOutputTokens.delete(exportOutputToken);
+      if (conversationOutputToken) conversationOutputTokens.delete(conversationOutputToken);
       throw error;
     } finally {
       if (activeOperation === operation) activeOperation = null;

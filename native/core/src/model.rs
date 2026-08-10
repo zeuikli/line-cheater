@@ -187,6 +187,26 @@ pub struct ExportReport {
     pub skipped_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationExportProgress {
+    pub processed_messages: u64,
+    pub total_messages: u64,
+    pub processed_attachments: u64,
+    pub total_attachments: u64,
+    pub processed_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationExportReport {
+    pub output_name: String,
+    pub messages: u64,
+    pub attachments: u64,
+    pub attachment_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogStats {
