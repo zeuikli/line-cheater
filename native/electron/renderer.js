@@ -2734,7 +2734,7 @@ function renderCleanupGroup(group) {
       : deletingAllAttachments ? "取消刪除所有附件" : "刪除所有附件";
     actions.append(toggleAll);
   }
-  if (canOpen && group.thumbnailBackedImageCount > 0) {
+  if (canOpen && group.nonemptyThumbnailCount > 0) {
     const keepThumbnail = document.createElement("button");
     keepThumbnail.type = "button";
     keepThumbnail.className =
@@ -2743,21 +2743,17 @@ function renderCleanupGroup(group) {
     keepThumbnail.dataset.groupKey = group.key;
     keepThumbnail.disabled = Boolean(group.plannedForChatRemoval);
     keepThumbnail.title = group.keepingThumbnails
-      ? "還原具有對應縮圖的圖片原檔"
-      : "只標記已有非空縮圖的圖片原檔；PDF、影片與無縮圖附件會保留";
-    keepThumbnail.textContent = group.keepingThumbnails ? "還原原始圖片" : "只保留縮圖";
+      ? "取消保護所有非空縮圖，並還原可安全配對的圖片原檔"
+      : "保留所有非空縮圖；只有能安全配對的圖片原檔會加入清理計畫";
+    keepThumbnail.textContent = group.keepingThumbnails ? "取消保留縮圖" : "只保留縮圖";
     actions.append(keepThumbnail);
   } else if (canOpen && group.chatKind === "community") {
     const unavailableThumbnail = document.createElement("button");
     unavailableThumbnail.type = "button";
     unavailableThumbnail.className = "cleanup-group-action";
     unavailableThumbnail.disabled = true;
-    unavailableThumbnail.textContent = group.hasThumbnail
-      ? "沒有可配對原圖"
-      : "沒有可保留縮圖";
-    unavailableThumbnail.title = group.hasThumbnail
-      ? "備份內只有縮圖，或原圖沒有相同的訊息 ID；不會冒險刪除未確認的原圖"
-      : "這個社群沒有非空縮圖可保留";
+    unavailableThumbnail.textContent = "沒有非空縮圖";
+    unavailableThumbnail.title = "這個社群沒有非空縮圖可保留";
     actions.append(unavailableThumbnail);
   }
   if (canOpen) {
@@ -3391,7 +3387,7 @@ async function applyGroupAction(groupKey, action, button) {
       message: cancelling
         ? "要取消這個聊天室目前的所有附件刪除設定嗎？\n\n若同時啟用只保留縮圖，圖片原檔的刪除設定仍會保留。"
         : keepingThumbnails
-          ? "這會刪除圖片原圖、影片、PDF、語音及其他附件；因為已啟用「只保留縮圖」，可配對的非空縮圖會優先保留。原始備份不會被修改。"
+          ? "這會刪除圖片原圖、影片、PDF、語音及其他附件；因為已啟用「只保留縮圖」，所有非空縮圖都會優先保留。原始備份不會被修改。"
           : "警告：這會刪除所有圖片原圖及縮圖，也包含影片、PDF、語音與其他附件。刪除縮圖後，聊天紀錄可能不再顯示圖片預覽；原始備份不會被修改。",
       confirmLabel: cancelling ? "取消刪除所有附件" : "確認刪除所有附件",
       danger: !cancelling
@@ -3433,11 +3429,11 @@ async function applyCategoryKeepThumbnails() {
     title: cancelling ? `取消${label}只保留縮圖？` : `將${label}只保留縮圖？`,
     message: cancelling
       ? `要批量取消${label}目前的只保留縮圖設定嗎？\n\n` +
-        "只會清除這個分類內相關圖片原檔的手動標記；安全自動標記及聊天室刪除計畫會保留。"
+        "將取消保護所有非空縮圖，並清除可安全配對之圖片原檔的手動標記；若仍啟用刪除所有附件，縮圖會重新加入清理計畫。安全自動標記及聊天室刪除計畫會保留。"
       : `要一次將${label}設定為只保留縮圖嗎？\n\n` +
         (cleanupCategoryActionState?.deletingAllAttachments
-          ? "目前已啟用刪除所有附件；套用後會優先保留可配對的非空縮圖，其餘原圖、影片、PDF、語音與其他附件仍會刪除。"
-          : "只會標記具有已辨識、非空縮圖的圖片原檔；縮圖、PDF、影片、無縮圖及無法確認的附件都會保留。已整個排入清理的聊天室不會變更。"),
+          ? "目前已啟用刪除所有附件；套用後會優先保留所有非空縮圖，其餘原圖、空縮圖、影片、PDF、語音與其他附件仍會刪除。"
+          : "所有非空縮圖都會保留，不需要能與原圖配對；只有能安全配對的圖片原檔會加入清理計畫，PDF、影片、無縮圖及無法確認的附件不會額外標記。已整個排入清理的聊天室不會變更。"),
     confirmLabel: cancelling ? "取消全部只保留縮圖" : "全部只保留縮圖",
     danger: !cancelling
   })) return;
@@ -3495,11 +3491,11 @@ async function deleteCategoryAttachments() {
     message: cancelling
       ? `要批量取消${label}目前的所有手動附件刪除標記嗎？\n\n` +
         (cleanupCategoryActionState?.keepingAllThumbnails
-          ? "「只保留縮圖」仍會維持啟用，因此具有配對縮圖的圖片原檔仍會刪除；安全自動標記及聊天室刪除計畫也會保留。"
+          ? "「只保留縮圖」仍會維持啟用，因此所有非空縮圖會保留，而能安全配對的圖片原檔仍會刪除；安全自動標記及聊天室刪除計畫也會保留。"
           : "安全自動標記及聊天室刪除計畫會保留。")
       : `要將${label}內的所有附件加入清理計畫嗎？\n\n` +
         (cleanupCategoryActionState?.keepingAllThumbnails
-          ? "這會刪除圖片原圖、影片、PDF、語音及其他附件；目前已啟用「只保留縮圖」，所以可配對的非空縮圖會優先保留。此操作不受上方附件類型篩選影響，原始備份不會被修改。"
+          ? "這會刪除圖片原圖、空縮圖、影片、PDF、語音及其他附件；目前已啟用「只保留縮圖」，所以所有非空縮圖都會優先保留。此操作不受上方附件類型篩選影響，原始備份不會被修改。"
           : "警告：這會刪除所有圖片原圖及縮圖，也包含影片、PDF、語音與其他附件，且不受上方附件類型篩選影響。刪除縮圖後，聊天紀錄可能不再顯示圖片預覽；原始備份不會被修改。"),
     confirmLabel: cancelling ? "取消刪除所有附件" : "確認刪除所有附件",
     danger: !cancelling

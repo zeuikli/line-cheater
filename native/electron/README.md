@@ -235,11 +235,12 @@ in the native catalog.
 - Missing/ambiguous IDs and IDs found in another chat are `unconfirmed`.
 - Original and thumbnail checkboxes are separate.
 - “刪除全部” toggles the complete group.
-- “只保留縮圖” only marks SQLite-confirmed image originals that have a
-  non-empty thumbnail for the same message and chat. It leaves PDFs, videos,
-  missing/empty-thumbnail attachments, and unconfirmed media untouched, clears
-  marks from the matching thumbnails, and toggles back to restoring those image
-  originals.
+- “只保留縮圖” protects every non-empty thumbnail in the selected scope,
+  including thumbnails without a matching original or SQLite message. It only
+  marks SQLite-confirmed image originals that can be safely paired with a
+  non-empty thumbnail; PDFs, videos, missing/empty-thumbnail originals, and
+  unconfirmed originals remain untouched unless another cleanup action marks
+  them.
 - Filters, category cards, sorting, search, category/group pagination, and
   safety/evidence copy mirror the web UI.
 - Advanced chat plans are keyed by `(source, chat_pk)`, so main and community

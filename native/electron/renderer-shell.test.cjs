@@ -368,7 +368,7 @@ test("supports reversible category-wide actions with locked mutation progress", 
   assert.match(renderer, /取消刪除分類所有聊天室/);
   assert.match(renderer, /所有圖片原圖及縮圖/);
   assert.match(renderer, /影片、PDF、語音與其他附件/);
-  assert.match(renderer, /可配對的非空縮圖會優先保留/);
+  assert.match(renderer, /所有非空縮圖都會優先保留/);
   assert.match(renderer, /dataset\.deletingAllAttachments/);
   assert.match(renderer, /\["all", "individual", "group", "community"\]\.includes\(category\)/);
   assert.match(renderer, /runCleanupMutation\(/);
@@ -539,15 +539,15 @@ test("opens cleanup thumbnails in the shared image modal", () => {
   assert.match(styles, /\.cleanup-preview-open\s*\{/);
 });
 
-test("offers keep-thumbnail only for thumbnail-backed image originals", () => {
-  assert.match(renderer, /group\.thumbnailBackedImageCount > 0/);
+test("offers keep-thumbnail for every group with a non-empty thumbnail", () => {
+  assert.match(renderer, /group\.nonemptyThumbnailCount > 0/);
   assert.match(
     renderer,
-    /PDF、影片與無縮圖附件會保留/
+    /所有非空縮圖；只有能安全配對的圖片原檔/
   );
-  assert.doesNotMatch(renderer, /group\.hasOriginal && group\.hasThumbnail/);
+  assert.doesNotMatch(renderer, /group\.thumbnailBackedImageCount > 0/);
   assert.match(renderer, /group\.chatKind === "community"/);
-  assert.match(renderer, /沒有可配對原圖/);
+  assert.match(renderer, /沒有非空縮圖/);
 });
 
 test("lists no-attachment chats only in advanced cleanup mode", () => {

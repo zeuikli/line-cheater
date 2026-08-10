@@ -1123,6 +1123,18 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
     let group_thumbnail = private_store.join("Message Thumbnails/g-unified/34567890.thumb");
     fs::create_dir_all(group_thumbnail.parent().unwrap()).unwrap();
     fs::write(&group_thumbnail, b"group thumbnail").unwrap();
+    let unpaired_group_thumbnail =
+        private_store.join("Message Thumbnails/g-unified/44567890.thumb");
+    fs::write(&unpaired_group_thumbnail, b"unpaired group thumbnail").unwrap();
+    let connection = Connection::open(private_store.join("Messages/Line.sqlite")).unwrap();
+    connection
+        .execute(
+            "INSERT INTO ZMESSAGE VALUES
+             (23, '44567890', 420, 8, 1, 0, 1, 'R', 'thumbnail only', NULL, NULL)",
+            [],
+        )
+        .unwrap();
+    connection.close().unwrap();
     let community_thumbnail = private_store.join("Message Thumbnails/square-chat/23456789.thumb");
     fs::create_dir_all(community_thumbnail.parent().unwrap()).unwrap();
     fs::write(&community_thumbnail, b"community thumbnail").unwrap();
@@ -1170,6 +1182,8 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
         .into_iter()
         .find(|group| group.chat_id == "g-unified")
         .unwrap();
+    assert_eq!(group.thumbnail_backed_image_count, 1);
+    assert_eq!(group.nonempty_thumbnail_count, 2);
     assert!(group.keeping_thumbnails);
 
     let community = catalog
@@ -1654,7 +1668,7 @@ fn lists_chats_without_indexed_attachments_for_advanced_cleanup() {
 }
 
 #[test]
-fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
+fn keep_thumbnail_protects_all_nonempty_thumbnails_without_requiring_a_pair() {
     let temporary = TempDir::new().unwrap();
     let source = make_fixture(temporary.path());
     let private_store = source.join(
@@ -1674,6 +1688,11 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
     )
     .unwrap();
     fs::write(thumbnails.join("62345678.thumb"), b"").unwrap();
+    fs::write(
+        thumbnails.join("72345678.thumb"),
+        b"image thumbnail without original",
+    )
+    .unwrap();
 
     let database_path = private_store.join("Messages/Line.sqlite");
     let connection = Connection::open(&database_path).unwrap();
@@ -1685,7 +1704,8 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
                 (31, '32345678', 320, 7, 1, 0, 2, 'R', 'video no thumbnail', NULL, NULL),
                 (32, '42345678', 330, 7, 1, 0, 1, 'R', 'image no thumbnail', NULL, NULL),
                 (33, '52345678', 340, 7, 1, 0, 2, 'R', 'video thumbnail', NULL, NULL),
-                (34, '62345678', 350, 7, 1, 0, 1, 'R', 'empty thumbnail', NULL, NULL);
+                (34, '62345678', 350, 7, 1, 0, 1, 'R', 'empty thumbnail', NULL, NULL),
+                (35, '72345678', 360, 7, 1, 0, 1, 'R', 'thumbnail without original', NULL, NULL);
             ",
         )
         .unwrap();
@@ -1693,7 +1713,8 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
 
     let prepared = prepare_source(&source, &temporary.path().join("work")).unwrap();
     let database = LineDatabase::open(&prepared.database_path).unwrap();
-    let mut catalog = Catalog::open(&temporary.path().join("work/cleanup-safety.sqlite")).unwrap();
+    let catalog_path = temporary.path().join("work/cleanup-safety.sqlite");
+    let mut catalog = Catalog::open(&catalog_path).unwrap();
     catalog
         .scan_source(&source, SourceKind::Directory, |_| {})
         .unwrap();
@@ -1736,6 +1757,19 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
         .find(|group| group.key == "chat:line:7")
         .unwrap();
     assert_eq!(group.thumbnail_backed_image_count, 1);
+    assert_eq!(group.nonempty_thumbnail_count, 3);
+
+    let standalone_thumbnail = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .iter()
+        .flat_map(|review| &review.files)
+        .find(|file| file.message_id == "72345678")
+        .unwrap()
+        .path
+        .clone();
+    catalog.set_marked(&standalone_thumbnail, true).unwrap();
 
     let overview = catalog
         .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
@@ -1770,6 +1804,59 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
             .flat_map(|review| &review.files)
             .all(|file| { file.kind != AttachmentKind::Thumbnail || !file.marked_for_removal })
     );
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    let reviews = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap();
+    for file in reviews.items.iter().flat_map(|review| &review.files) {
+        if file.kind == AttachmentKind::Thumbnail && file.bytes > 0 {
+            assert!(
+                !file.marked_for_removal,
+                "{} should be protected",
+                file.path
+            );
+        } else {
+            assert!(file.marked_for_removal, "{} should be deleted", file.path);
+        }
+    }
+
+    drop(catalog);
+    let catalog = Catalog::open(&catalog_path).unwrap();
+    let group = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.key == "chat:line:7")
+        .unwrap();
+    assert!(group.keeping_thumbnails);
+    assert!(group.deleting_all_attachments);
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    let reviews = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap();
+    assert!(
+        reviews
+            .items
+            .iter()
+            .flat_map(|review| &review.files)
+            .all(|file| file.marked_for_removal)
+    );
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
 
     let overview = catalog.clear_all_user_removal_plans().unwrap();
     assert_eq!(overview.marked_count, 0);

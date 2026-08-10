@@ -379,6 +379,7 @@ pub struct CleanupGroup {
     pub has_original: bool,
     pub has_thumbnail: bool,
     pub thumbnail_backed_image_count: u64,
+    pub nonempty_thumbnail_count: u64,
     pub keeping_thumbnails: bool,
     pub deleting_all_attachments: bool,
     pub latest_timestamp: i64,
