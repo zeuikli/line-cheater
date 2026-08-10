@@ -6,6 +6,10 @@ const path = require("node:path");
 
 const CACHE_VERSION_FILE = ".line-cheater-cache-version";
 const SESSION_KEY_PATTERN = /^[0-9a-f]{64}$/;
+const CATALOG_FILE = "catalog.sqlite";
+// Keep this aligned with native/core/src/catalog.rs.
+const CONTEXT_INDEX_VERSION = "5";
+const MAX_DISCOVERED_SESSIONS = 100;
 
 function sessionRoot(userDataPath) {
   return path.resolve(userDataPath, "sessions");
@@ -15,6 +19,166 @@ function sessionWorkDir(userDataPath, sourcePath) {
   const source = path.resolve(sourcePath);
   const key = crypto.createHash("sha256").update(source).digest("hex");
   return path.join(sessionRoot(userDataPath), key);
+}
+
+function normalizeStoredSourcePath(sourcePath) {
+  let normalized = String(sourcePath || "").trim();
+  if (process.platform === "win32") {
+    if (/^\\\\\?\\UNC\\/i.test(normalized)) {
+      normalized = `\\\\${normalized.slice(8)}`;
+    } else if (/^\\\\\?\\/.test(normalized)) {
+      normalized = normalized.slice(4);
+    }
+  }
+  return normalized ? path.resolve(normalized) : "";
+}
+
+function sourceKindFromCatalog(value) {
+  return {
+    Directory: "directory",
+    ImazingArchive: "archive",
+    Sqlite: "sqlite"
+  }[String(value || "")] || null;
+}
+
+function fileSourceFingerprint(sourcePath) {
+  const metadata = fs.statSync(sourcePath, { bigint: true });
+  const bytes = Buffer.alloc(8);
+  const modified = Buffer.alloc(8);
+  bytes.writeBigUInt64LE(metadata.size);
+  modified.writeBigInt64LE(metadata.mtimeNs);
+  return crypto.createHash("sha256").update(bytes).update(modified).digest("hex");
+}
+
+function sessionUnavailableReason(session) {
+  if (!session.versionCompatible) return `Session 版本 ${session.cacheVersion || "未知"} 不相容`;
+  if (!session.sourceExists) return "原始備份已移動或不存在";
+  if (session.sourceCurrent === false) return "原始備份在分析後已變更";
+  if (session.scanStatus !== "complete") return "附件掃描尚未完成";
+  if (session.contextStatus !== "complete") return "SQLite 關聯分析尚未完成";
+  if (session.contextIndexVersion !== CONTEXT_INDEX_VERSION) {
+    return "Session 分析格式需要更新";
+  }
+  return "";
+}
+
+function readSessionCache(userDataPath, sessionKey, appVersion, compatibleVersions = []) {
+  if (!SESSION_KEY_PATTERN.test(sessionKey)) return null;
+  const workDir = assertManagedSessionPath(
+    userDataPath,
+    path.join(sessionRoot(userDataPath), sessionKey)
+  );
+  const directory = fs.lstatSync(workDir);
+  if (!directory.isDirectory() || directory.isSymbolicLink()) return null;
+  const catalogPath = path.join(workDir, CATALOG_FILE);
+  const catalogMetadata = fs.lstatSync(catalogPath);
+  if (!catalogMetadata.isFile() || catalogMetadata.isSymbolicLink()) return null;
+
+  const { DatabaseSync } = require("node:sqlite");
+  const database = new DatabaseSync(catalogPath, { readOnly: true });
+  let metadata;
+  let attachmentCount;
+  try {
+    database.exec("PRAGMA query_only = ON");
+    const rows = database.prepare(
+      "SELECT key, value FROM meta WHERE key IN (" +
+      "'source_path', 'source_kind', 'source_fingerprint', " +
+      "'scan_status', 'context_status', 'context_index_version', 'scan_completed_at')"
+    ).all();
+    metadata = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    attachmentCount = Number(database.prepare(
+      "SELECT COUNT(*) AS count FROM files WHERE attachment_kind IS NOT NULL"
+    ).get().count) || 0;
+  } finally {
+    database.close();
+  }
+
+  const sourcePath = normalizeStoredSourcePath(metadata.source_path);
+  const sourceKind = sourceKindFromCatalog(metadata.source_kind);
+  if (!sourcePath || !sourceKind) return null;
+  if (path.resolve(sessionWorkDir(userDataPath, sourcePath)) !== path.resolve(workDir)) return null;
+
+  const cacheVersion = cachedVersion(workDir) || "";
+  const versionCompatible = cacheVersion === appVersion ||
+    compatibleVersions.includes(cacheVersion);
+  let sourceExists = false;
+  let sourceCurrent = null;
+  let sourceBytes = 0;
+  try {
+    const sourceMetadata = fs.statSync(sourcePath, { bigint: true });
+    sourceExists = sourceKind === "directory"
+      ? sourceMetadata.isDirectory()
+      : sourceMetadata.isFile();
+    sourceBytes = sourceMetadata.isFile() ? Number(sourceMetadata.size) : 0;
+    if (sourceExists && sourceKind !== "directory" && metadata.source_fingerprint) {
+      sourceCurrent = fileSourceFingerprint(sourcePath) === metadata.source_fingerprint;
+    }
+  } catch {
+    sourceExists = false;
+  }
+
+  const session = {
+    id: sessionKey,
+    sourcePath,
+    sourceKind,
+    sourceName: path.basename(sourcePath) || sourcePath,
+    sourceBytes,
+    sourceExists,
+    sourceCurrent,
+    cacheVersion,
+    versionCompatible,
+    scanStatus: metadata.scan_status || "not_started",
+    contextStatus: metadata.context_status || "not_started",
+    contextIndexVersion: metadata.context_index_version || "",
+    scanCompletedAt: Number(metadata.scan_completed_at) || 0,
+    attachmentCount,
+    updatedAt: Math.floor(catalogMetadata.mtimeMs / 1000)
+  };
+  session.unavailableReason = sessionUnavailableReason(session);
+  session.reusable = !session.unavailableReason;
+  return session;
+}
+
+function listSessionCaches(userDataPath, appVersion, compatibleVersions = []) {
+  const version = String(appVersion || "").trim();
+  if (!version || /[\r\n]/.test(version)) {
+    throw new TypeError("A valid LINE Cheater version is required for session discovery.");
+  }
+  if (!Array.isArray(compatibleVersions)) {
+    throw new TypeError("Compatible cache versions must be an array.");
+  }
+  const root = sessionRoot(userDataPath);
+  let entries;
+  try {
+    const metadata = fs.lstatSync(root);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) return [];
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const sessions = [];
+  for (const entry of entries
+    .filter((item) => item.isDirectory() && SESSION_KEY_PATTERN.test(item.name))
+    .slice(0, MAX_DISCOVERED_SESSIONS)) {
+    try {
+      const session = readSessionCache(
+        userDataPath,
+        entry.name,
+        version,
+        compatibleVersions
+      );
+      if (session) sessions.push(session);
+    } catch {
+      // A corrupt or partially-created cache must not hide other reusable sessions.
+    }
+  }
+  sessions.sort((left, right) =>
+    Number(right.reusable) - Number(left.reusable) ||
+    right.scanCompletedAt - left.scanCompletedAt ||
+    right.updatedAt - left.updatedAt ||
+    left.sourcePath.localeCompare(right.sourcePath)
+  );
+  return sessions;
 }
 
 function assertManagedSessionPath(userDataPath, workDir) {
@@ -113,7 +277,10 @@ function outputFallsInsideSession(workDir, outputPath) {
 module.exports = {
   CACHE_VERSION_FILE,
   clearSessionCache,
+  listSessionCaches,
+  normalizeStoredSourcePath,
   outputFallsInsideSession,
   prepareSessionCache,
+  readSessionCache,
   sessionWorkDir
 };

@@ -137,6 +137,17 @@ grouped below rather than treated as separate feature changes.
   chats” into matching batch-cancel actions. Chat-backed categories support
   thumbnail preservation; unreferenced and unconfirmed categories support only
   attachment deletion.
+- The desktop welcome screen discovers at most 100 hash-named session caches.
+  It reads `catalog.sqlite` metadata in query-only mode, normalizes Windows
+  extended-length source paths, verifies the session/path hash, cache version,
+  scan/context completion, source existence, and `.imazingapp` metadata
+  fingerprint, then allows complete sessions to reopen without rescanning.
+  Invalid, stale, missing-source, and incomplete sessions remain non-selectable.
+  The saved-session sidecar starts with `serve --reuse-session`, independently
+  rechecks that metadata fingerprint, and skips the otherwise unbounded catalog
+  content verification during browsing. Export/search reuse the verified
+  process state; candidate creation still performs the full source-content
+  validation before output.
 
 ## Goal
 

@@ -352,6 +352,11 @@ fn detects_same_size_same_mtime_content_replacement() {
         .unwrap();
 
     assert!(
+        catalog
+            .source_metadata_matches_current(&source, SourceKind::Directory)
+            .unwrap()
+    );
+    assert!(
         !catalog
             .source_matches_current(&source, SourceKind::Directory)
             .unwrap()

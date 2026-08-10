@@ -16,8 +16,10 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const {
   clearSessionCache,
+  listSessionCaches,
   outputFallsInsideSession,
   prepareSessionCache,
+  readSessionCache,
   sessionWorkDir
 } = require("./session-cache.cjs");
 const { SidecarClient } = require("./sidecar-client.cjs");
@@ -100,7 +102,7 @@ const exportOutputTokens = new Map();
 const previewTokens = new Map();
 const MAX_PREVIEW_TOKENS = 128;
 const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
-const SESSION_CACHE_COMPATIBLE_VERSIONS = ["0.1.23"];
+const SESSION_CACHE_COMPATIBLE_VERSIONS = ["0.1.23", "0.1.24", "0.1.25"];
 
 async function checkForUpdates() {
   if (updateCheckStarted || !app.isPackaged) return;
@@ -183,7 +185,7 @@ function sourceDialogOptions(kind) {
   };
 }
 
-async function replaceSidecar(source) {
+async function replaceSidecar(source, reuseSession = false) {
   if (sidecar) {
     const previous = sidecar;
     sidecar = null;
@@ -200,10 +202,12 @@ async function replaceSidecar(source) {
     app.getVersion(),
     SESSION_CACHE_COMPATIBLE_VERSIONS
   );
-  const client = new SidecarClient(rustBinaryPath(), [
+  const sidecarArguments = [
     "--work-dir", workDir,
     "serve", "--source", activeSource
-  ]);
+  ];
+  if (reuseSession) sidecarArguments.push("--reuse-session");
+  const client = new SidecarClient(rustBinaryPath(), sidecarArguments);
   client.on("sidecarEvent", (event) => {
     if (event.event !== "ready" && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("line-native:event", event);
@@ -300,6 +304,38 @@ function cleanCancelledOperation(operation) {
 }
 
 async function registerIpc() {
+  ipcMain.handle("line-native:list-sessions", (event) => {
+    assertTrustedSender(event);
+    return listSessionCaches(
+      app.getPath("userData"),
+      app.getVersion(),
+      SESSION_CACHE_COMPATIBLE_VERSIONS
+    );
+  });
+
+  ipcMain.handle("line-native:open-session", async (event, sessionId) => {
+    assertTrustedSender(event);
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{64}$/.test(sessionId)) {
+      throw new TypeError("Invalid session ID.");
+    }
+    let savedSession;
+    try {
+      savedSession = readSessionCache(
+        app.getPath("userData"),
+        sessionId,
+        app.getVersion(),
+        SESSION_CACHE_COMPATIBLE_VERSIONS
+      );
+    } catch {
+      throw new Error("無法讀取這個 Session；catalog.sqlite 可能已損壞或不完整。");
+    }
+    if (!savedSession) throw new Error("找不到指定的 Session。");
+    if (!savedSession.reusable) {
+      throw new Error(`無法直接載入這個 Session：${savedSession.unavailableReason}。`);
+    }
+    return replaceSidecar(savedSession.sourcePath, true);
+  });
+
   ipcMain.handle("line-native:select-source", async (event, kind) => {
     assertTrustedSender(event);
     if (!["directory", "archive", "sqlite"].includes(kind)) {

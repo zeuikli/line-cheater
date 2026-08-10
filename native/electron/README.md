@@ -60,6 +60,9 @@ handle, or arbitrary filesystem methods. The main process:
   choose arbitrary paths directly;
 - binds every source-specific session cache to `app.getVersion()`, deleting and
   rebuilding catalogs and staging data when that version is missing or changes;
+- discovers bounded, hash-named session caches, reads their catalog metadata
+  read-only, and exposes only complete compatible sessions whose original
+  source still exists and has the same file metadata fingerprint;
 - closes the background core and deletes the complete source session after a
   candidate passes full validation. Candidate output inside the internal cache
   is rejected before construction.
@@ -138,52 +141,60 @@ developer machine.
    the secondary choice. Direct `Line.sqlite` loading remains supported by the
    native core for diagnostics but is intentionally hidden from the end-user
    welcome screen.
-2. Show the same blocking spinner/progress treatment as the web app while the
+2. List complete analyzed sessions below the source buttons. Each row shows the
+   original backup path, attachment count, scan time, and cache version. A
+   session can be opened directly only after its hashed directory, source file,
+   metadata fingerprint, compatible version, scan status, and context status
+   pass validation; stale or incomplete rows remain visible with a reason.
+   Direct session opening trusts that metadata fingerprint to avoid hashing the
+   complete archive again. Candidate construction retains the stronger full
+   source-content verification before writing any output.
+3. Show the same blocking spinner/progress treatment as the web app while the
    read-only session, companion databases, attachment catalog, and chat page are
    prepared.
-3. Keep the user on the source screen after preparation and enable an explicit
+4. Keep the user on the source screen after preparation and enable an explicit
    Next action.
-4. Enter a native app shell with a persistent source summary and sidebar. The
+5. Enter a native app shell with a persistent source summary and sidebar. The
    sidebar switches between Browse, Cleanup, Exact Duplicates, and Advanced;
    only one workspace is visible at a time. Exact Duplicates remains visible
    but prompts the user to enable the guarded Advanced mode before it opens.
    The welcome header and sidebar reuse the packaged macOS app icon rather than
    a separate lettermark.
-5. Resolve chat names from the main, `LineSquare.sqlite`, and
+6. Resolve chat names from the main, `LineSquare.sqlite`, and
    `UnifiedGroup.sqlite` databases plus rename system messages. Main and
    community chats share a source-aware cursor and keep the source needed to
    route later message requests.
-6. Page chats at 100 rows and messages at 180 rows in both directions using
+7. Page chats at 100 rows and messages at 180 rows in both directions using
    the web-style chat/message panel and incoming/outgoing/system bubble
    layout. Rust supplies `isSelf`; send status is never allowed to turn
    another identified member into “我”.
-7. Hydrate referenced chat images from catalog-authorized original/thumbnail
+8. Hydrate referenced chat images from catalog-authorized original/thumbnail
    paths with at most four concurrent preview requests. HTTP(S) text is
    linkified, receives a bounded domain/title preview card, and opens in the
    system browser through a protocol-validated main-process bridge.
-8. Search message text with bounded native result pages.
-9. Review six cleanup categories inside a fixed-height workspace. The list
+9. Search message text with bounded native result pages.
+10. Review six cleanup categories inside a fixed-height workspace. The list
    replaces four chat/special groups at a time, so the page header, filters,
    pagination, and candidate action never leave the window.
-10. Search/filter/sort and enter a group. Detail mode becomes an iOS
+11. Search/filter/sort and enter a group. Detail mode becomes an iOS
     Photos-style continuous album grouped by month. It fetches 24 review bundles
     per native request and keeps at most three adjacent batches (72 cards) in
     the DOM; measured virtual spacers preserve scroll position when an older
     batch is discarded. Thumbnails keep their aspect ratio without cropping,
     with message/file controls below. A loaded thumbnail is a keyboard-focusable
     zoom button and opens the same full-size image modal used by chat messages.
-11. Mark original attachments and thumbnails independently, or use the reversible
+12. Mark original attachments and thumbnails independently, or use the reversible
    delete-all / keep-thumbnail group actions.
-12. Choose an output through a native save dialog and build a full-CRC candidate
+13. Choose an output through a native save dialog and build a full-CRC candidate
     with the web-style progress/success/error dialog. After successful output
     validation, close the source session, clear its private local cache, and
     return the underlying UI to source selection while keeping the result dialog
     visible.
-13. Turn on the guarded desktop-only Advanced mode to plan deletion of a selected
+14. Turn on the guarded desktop-only Advanced mode to plan deletion of a selected
     chat and its attachments, or use the Advanced sidebar page to include empty
     chats, system-only chats, and orphan `LineSquare` messages. The source remains
     read-only; only the newly built candidate receives the SQLite rewrite.
-14. In Advanced mode, scan exact duplicate attachments and preview each group
+15. In Advanced mode, scan exact duplicate attachments and preview each group
     through the catalog-authorized image bridge. “Merge All Automatically” is
     a reversible batch button: its second state cancels all automatic merging.
     When enabled, candidate construction applies every file/chat removal first,

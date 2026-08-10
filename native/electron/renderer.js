@@ -23,6 +23,7 @@ let activeSourceBytes = 0;
 let activeWorkspaceView = "browse";
 let selectedSourceKind = null;
 let sourceGeneration = 0;
+let savedSessionLoading = false;
 let messageRenderGeneration = 0;
 let packageInProgress = false;
 let cleanupMutationInProgress = false;
@@ -78,6 +79,8 @@ const elements = {
   workspaceScreen: document.querySelector("#workspace-screen"),
   enterWorkspace: document.querySelector("#enter-workspace"),
   changeSource: document.querySelector("#change-source"),
+  refreshSessions: document.querySelector("#refresh-sessions"),
+  savedSessionList: document.querySelector("#saved-session-list"),
   sourceReadyCard: document.querySelector("#source-ready-card"),
   selectedSourceName: document.querySelector("#selected-source-name"),
   selectedSourceDetail: document.querySelector("#selected-source-detail"),
@@ -272,6 +275,90 @@ function sourceDisplayName(path, kind) {
   return parts.pop() || sourceKindLabel(kind);
 }
 
+function sourceSelectionKind(kind) {
+  return {
+    directory: "directory",
+    imazing_archive: "archive",
+    sqlite: "sqlite"
+  }[kind] || kind;
+}
+
+function sessionDate(seconds) {
+  const value = Number(seconds) * 1000;
+  if (!Number.isFinite(value) || value <= 0) return "時間未知";
+  return new Intl.DateTimeFormat("zh-TW", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function renderSavedSessions(sessions) {
+  elements.savedSessionList.replaceChildren();
+  if (!sessions.length) {
+    const empty = document.createElement("p");
+    empty.className = "saved-session-empty";
+    empty.textContent = "找不到可辨識的分析 Session。選擇備份並完成掃描後會顯示在這裡。";
+    elements.savedSessionList.append(empty);
+    return;
+  }
+  for (const session of sessions) {
+    const item = document.createElement("article");
+    item.className = `saved-session-item${session.reusable ? "" : " is-unavailable"}`;
+    const main = document.createElement("div");
+    main.className = "saved-session-main";
+    const heading = document.createElement("div");
+    heading.className = "saved-session-heading";
+    const name = document.createElement("strong");
+    name.textContent = session.sourceName || sourceDisplayName(session.sourcePath, session.sourceKind);
+    const state = document.createElement("span");
+    state.className = "saved-session-state";
+    state.textContent = session.reusable ? "可直接載入" : "無法直接載入";
+    heading.append(name, state);
+    const sourcePath = document.createElement("span");
+    sourcePath.className = "saved-session-path";
+    sourcePath.textContent = session.sourcePath;
+    sourcePath.title = session.sourcePath;
+    const meta = document.createElement("span");
+    meta.className = "saved-session-meta";
+    meta.textContent = session.reusable
+      ? `${sourceKindLabel(session.sourceKind === "archive" ? "imazing_archive" : session.sourceKind)} · ` +
+        `${Number(session.attachmentCount).toLocaleString()} 個附件 · ` +
+        `${sessionDate(session.scanCompletedAt)} · Session ${session.cacheVersion}`
+      : `${session.unavailableReason || "Session 不完整"} · Session ${session.cacheVersion || "版本未知"}`;
+    main.append(heading, sourcePath, meta);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "secondary-button compact-button saved-session-open";
+    open.dataset.sessionOpen = session.id;
+    open.dataset.sessionKind = session.sourceKind;
+    open.disabled = !session.reusable;
+    open.title = session.reusable
+      ? `載入 ${session.sourcePath}`
+      : session.unavailableReason || "Session 無法直接載入";
+    open.textContent = "載入 Session";
+    item.append(main, open);
+    elements.savedSessionList.append(item);
+  }
+}
+
+async function loadSavedSessions() {
+  if (savedSessionLoading) return;
+  savedSessionLoading = true;
+  elements.refreshSessions.disabled = true;
+  try {
+    const sessions = await bridge.listSessions();
+    renderSavedSessions(Array.isArray(sessions) ? sessions : []);
+  } catch (error) {
+    const message = document.createElement("p");
+    message.className = "saved-session-empty error";
+    message.textContent = `無法讀取 Session：${error.message}`;
+    elements.savedSessionList.replaceChildren(message);
+  } finally {
+    savedSessionLoading = false;
+    elements.refreshSessions.disabled = false;
+  }
+}
+
 function renderSessionSummary(info) {
   elements.sessionSummary.replaceChildren();
   const performance = info.performance || {};
@@ -283,6 +370,7 @@ function renderSessionSummary(info) {
     : "自動";
   for (const [label, value] of [
     ["類型", sourceKindLabel(info.source.kind)],
+    ["來源路徑", info.source.sourcePath],
     ["SQLite 檢查", info.quickCheck],
     ["來源唯讀", info.readOnly ? "是" : "否"],
     ["群組名稱資料", info.unifiedGroupLoaded ? "已載入" : "未提供"],
@@ -354,6 +442,7 @@ function enterWorkspace() {
 function returnToWelcome() {
   elements.workspaceScreen.classList.add("hidden");
   elements.welcomeScreen.classList.remove("hidden");
+  void loadSavedSessions();
   elements.enterWorkspace.focus();
 }
 
@@ -1094,15 +1183,19 @@ function renderMessageLoadError() {
   setRetryVisible(elements.retryMessages, true);
 }
 
-async function openSource(kind) {
+async function openSource(kind, sessionId = null) {
   const requestSourceGeneration = ++sourceGeneration;
   const hadProvider = Boolean(provider);
-  showLoadModal("請在系統視窗選擇 LINE 備份來源。");
+  showLoadModal(sessionId
+    ? "正在讀取既有分析 Session…"
+    : "請在系統視窗選擇 LINE 備份來源。");
   updateLoadModalProgress(2);
   await waitForUiPaint();
   try {
     setStatus("正在開啟備份…");
-    const ready = await bridge.selectSource(kind);
+    const ready = sessionId
+      ? await bridge.openSession(sessionId)
+      : await bridge.selectSource(kind);
     if (!ready) {
       setStatus(hadProvider ? "已取消，保留目前備份。" : "已取消選擇備份。");
       closeLoadModal();
@@ -1202,10 +1295,9 @@ async function openSource(kind) {
       info.catalog.scanStatus !== "complete";
     elements.searchButton.disabled = true;
     setCandidateBuildDisabled(true);
-    if (kind !== "sqlite" &&
+    if (info.source.kind !== "sqlite" &&
         (!info.catalogSourceCurrent ||
-          info.catalog.scanStatus !== "complete" ||
-          info.catalog.attachmentCount === 0)) {
+          info.catalog.scanStatus !== "complete")) {
       await scanCatalog({ keepLoadModal: true });
       if (requestSourceGeneration !== sourceGeneration) return;
     } else if (info.catalog.scanStatus === "complete") {
@@ -1236,8 +1328,10 @@ async function openSource(kind) {
     updateLoadModalProgress(93, "正在顯示聊天室…");
     await loadChats("initial");
     updateLoadModalProgress(100, "完整備份解析完成。");
-    setStatus(cleanupPlanNotice || "備份已以唯讀模式開啟，可以進入工作區。");
-    selectedSourceKind = kind;
+    setStatus(cleanupPlanNotice || (sessionId
+      ? "既有 Session 已載入，不需要重新分析備份。"
+      : "備份已以唯讀模式開啟，可以進入工作區。"));
+    selectedSourceKind = sourceSelectionKind(info.source.kind);
     elements.selectedSourceName.textContent = sourceName;
     elements.selectedSourceDetail.textContent =
       `${sourceType} · ${formatBytes(sourceSize)} · SQLite ${finalInfo.quickCheck}`;
@@ -1262,6 +1356,7 @@ async function openSource(kind) {
     elements.sessionSummary.classList.add("hidden");
     setStatus(error.message, true);
     closeLoadModal();
+    if (sessionId) void loadSavedSessions();
   }
 }
 
@@ -3954,6 +4049,12 @@ function updateCleanupFilter() {
 for (const button of document.querySelectorAll("[data-source]")) {
   button.addEventListener("click", () => void openSource(button.dataset.source));
 }
+elements.refreshSessions.addEventListener("click", () => void loadSavedSessions());
+elements.savedSessionList.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-session-open]");
+  if (!button || button.disabled) return;
+  void openSource(button.dataset.sessionKind, button.dataset.sessionOpen);
+});
 elements.enterWorkspace.addEventListener("click", enterWorkspace);
 elements.changeSource.addEventListener("click", returnToWelcome);
 const sidebarItems = Array.from(document.querySelectorAll("[data-view]"));
@@ -4286,3 +4387,5 @@ bridge.on("duplicateHashProgress", (event) => {
     ? `正在計算 SHA-256… ${processed.toLocaleString()} / ${total.toLocaleString()}`
     : "正在計算 SHA-256…";
 });
+
+void loadSavedSessions();

@@ -205,7 +205,7 @@ test("versions session cache and clears it after a successful candidate build", 
   assert.match(main, /app\.getVersion\(\)/);
   assert.match(sessionCache, /CACHE_VERSION_FILE = "\.line-cheater-cache-version"/);
   assert.match(sessionCache, /previousVersion === version/);
-  assert.match(main, /SESSION_CACHE_COMPATIBLE_VERSIONS = \["0\.1\.23"\]/);
+  assert.match(main, /SESSION_CACHE_COMPATIBLE_VERSIONS = \["0\.1\.23", "0\.1\.24", "0\.1\.25"\]/);
   assert.match(sessionCache, /compatibleVersions\.includes\(previousVersion\)/);
   assert.match(sessionCache, /clearSessionCache\(userDataPath, workDir\)/);
   assert.match(main, /outputFallsInsideSession\(workDir, output\)/);
@@ -216,6 +216,27 @@ test("versions session cache and clears it after a successful candidate build", 
   assert.match(renderer, /setCandidateBuildDisabled\(!provider\)/);
   assert.match(macPackager, /"session-cache\.cjs"/);
   assert.match(windowsPackager, /"session-cache\.cjs"/);
+});
+
+test("lists and directly opens complete analyzed sessions", () => {
+  assert.match(html, /id="saved-sessions-title">已分析的 Session/);
+  assert.match(html, /id="saved-session-list"/);
+  assert.match(html, /id="refresh-sessions"/);
+  assert.match(preload, /listSessions\(\)/);
+  assert.match(preload, /openSession\(sessionId\)/);
+  assert.match(main, /"line-native:list-sessions"/);
+  assert.match(main, /"line-native:open-session"/);
+  assert.match(main, /readSessionCache\(/);
+  assert.match(main, /replaceSidecar\(savedSession\.sourcePath, true\)/);
+  assert.match(main, /sidecarArguments\.push\("--reuse-session"\)/);
+  assert.match(sessionCache, /function listSessionCaches\(/);
+  assert.match(sessionCache, /source_fingerprint/);
+  assert.match(sessionCache, /session\.reusable = !session\.unavailableReason/);
+  assert.match(renderer, /function renderSavedSessions\(sessions\)/);
+  assert.match(renderer, /bridge\.openSession\(sessionId\)/);
+  assert.match(renderer, /既有 Session 已載入，不需要重新分析備份/);
+  assert.match(renderer, /\["來源路徑", info\.source\.sourcePath\]/);
+  assert.match(styles, /\.saved-session-list\s*\{/);
 });
 
 test("checks packaged apps for newer stable GitHub releases at startup", () => {

@@ -50,6 +50,21 @@
             </button>
           </div>
 
+          <section class="saved-sessions" aria-labelledby="saved-sessions-title">
+            <header class="saved-sessions-header">
+              <div>
+                <h3 id="saved-sessions-title">已分析的 Session</h3>
+                <p>直接載入既有分析結果，不必重新掃描未變更的備份。</p>
+              </div>
+              <button id="refresh-sessions" class="secondary-button compact-button" type="button">
+                重新整理
+              </button>
+            </header>
+            <div id="saved-session-list" class="saved-session-list" aria-live="polite">
+              <p class="saved-session-empty">正在尋找已分析的備份…</p>
+            </div>
+          </section>
+
           <div id="source-ready-card" class="source-ready-card hidden" aria-live="polite">
             <span class="ready-check" aria-hidden="true">✓</span>
             <div class="source-ready-main">

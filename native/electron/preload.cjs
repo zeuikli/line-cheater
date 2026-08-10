@@ -16,6 +16,15 @@ const eventNames = new Set([
 ]);
 
 contextBridge.exposeInMainWorld("lineNativeBridge", Object.freeze({
+  listSessions() {
+    return ipcRenderer.invoke("line-native:list-sessions");
+  },
+  openSession(sessionId) {
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{64}$/.test(sessionId)) {
+      return Promise.reject(new TypeError("Invalid session ID."));
+    }
+    return ipcRenderer.invoke("line-native:open-session", sessionId);
+  },
   selectSource(kind) {
     if (!sourceKinds.has(kind)) return Promise.reject(new TypeError("Invalid source kind."));
     return ipcRenderer.invoke("line-native:select-source", kind);

@@ -95,6 +95,8 @@ enum Command {
     Serve {
         #[arg(long)]
         source: PathBuf,
+        #[arg(long)]
+        reuse_session: bool,
     },
     Slim {
         #[arg(long)]
@@ -278,10 +280,17 @@ fn main() -> Result<()> {
         Command::Stats { catalog } => {
             print_json(&Catalog::open(&catalog)?.stats()?)?;
         }
-        Command::Serve { source } => {
+        Command::Serve {
+            source,
+            reuse_session,
+        } => {
             let stdout = std::io::stdout();
             let mut output = BufWriter::new(stdout.lock());
-            let mut session = NativeSession::open_reporting(&source, &cli.work_dir, &mut output)?;
+            let mut session = if reuse_session {
+                NativeSession::open_reporting_reusing_catalog(&source, &cli.work_dir, &mut output)?
+            } else {
+                NativeSession::open_reporting(&source, &cli.work_dir, &mut output)?
+            };
             let stdin = std::io::stdin();
             serve(&mut session, &mut BufReader::new(stdin.lock()), &mut output)?;
         }

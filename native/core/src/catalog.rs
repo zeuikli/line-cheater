@@ -428,7 +428,13 @@ impl Catalog {
         self.meta("source_fingerprint")
     }
 
-    pub fn source_matches_current(&self, source: &Path, kind: SourceKind) -> Result<bool> {
+    pub fn analysis_is_complete(&self) -> Result<bool> {
+        Ok(self.meta("scan_status")?.as_deref() == Some("complete")
+            && self.meta("context_status")?.as_deref() == Some("complete")
+            && self.meta("context_index_version")?.as_deref() == Some(CONTEXT_INDEX_VERSION))
+    }
+
+    pub fn source_metadata_matches_current(&self, source: &Path, kind: SourceKind) -> Result<bool> {
         let Some(bound) = self.source_path()? else {
             return Ok(false);
         };
@@ -443,11 +449,19 @@ impl Catalog {
         if stored_fingerprint != source_metadata_fingerprint(&current, kind)? {
             return Ok(false);
         }
+        Ok(true)
+    }
+
+    pub fn source_matches_current(&self, source: &Path, kind: SourceKind) -> Result<bool> {
+        if !self.source_metadata_matches_current(source, kind)? {
+            return Ok(false);
+        }
+        let current = source.canonicalize()?;
         if !self.content_matches_catalog(&current, kind)? {
             return Ok(false);
         }
         if kind == SourceKind::ImazingArchive {
-            return Ok(stored_fingerprint == source_metadata_fingerprint(&current, kind)?);
+            return self.source_metadata_matches_current(&current, kind);
         }
         Ok(true)
     }
