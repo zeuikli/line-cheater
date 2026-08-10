@@ -160,6 +160,7 @@ pub enum ExportScope<'a> {
 pub struct ExportOptions {
     pub images_only: bool,
     pub include_thumbnails: bool,
+    pub enforce_path_limit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1098,7 +1099,6 @@ impl Catalog {
         scope: ExportScope<'_>,
         output: &Path,
         options: ExportOptions,
-        enforce_cap: bool,
         mut on_progress: F,
     ) -> Result<ExportReport>
     where
@@ -1133,8 +1133,11 @@ impl Catalog {
             bail!("partial export output already exists; remove it before retrying");
         }
 
-        let (total_files, total_bytes) =
-            self.export_totals(&scope, options.include_thumbnails, enforce_cap)?;
+        let (total_files, total_bytes) = self.export_totals(
+            &scope,
+            options.include_thumbnails,
+            options.enforce_path_limit,
+        )?;
         let mut accumulator = ExportAccumulator {
             progress: ExportProgress {
                 total_files,
@@ -1156,7 +1159,6 @@ impl Catalog {
                 paths,
                 &partial,
                 options,
-                enforce_cap,
                 &mut accumulator,
                 &mut on_progress,
             ),
@@ -1311,13 +1313,16 @@ impl Catalog {
         if paths.is_empty() {
             bail!("no attachments match the current filters");
         }
+        let options = ExportOptions {
+            enforce_path_limit: false,
+            ..options
+        };
         self.export_attachments(
             source,
             source_kind,
             ExportScope::Paths(&paths),
             output,
             options,
-            false,
             on_progress,
         )
     }
@@ -1516,14 +1521,13 @@ impl Catalog {
         paths: &[String],
         output: &Path,
         options: ExportOptions,
-        enforce_cap: bool,
         accumulator: &mut ExportAccumulator,
         on_progress: &mut F,
     ) -> Result<()>
     where
         F: FnMut(ExportProgress),
     {
-        if enforce_cap && paths.len() > MAX_EXPORT_PATHS {
+        if options.enforce_path_limit && paths.len() > MAX_EXPORT_PATHS {
             bail!("export selection cannot contain more than {MAX_EXPORT_PATHS} files");
         }
         let mut items = Vec::new();

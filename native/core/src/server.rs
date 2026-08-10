@@ -1016,8 +1016,8 @@ fn handle_request<W: Write>(
                 ExportOptions {
                     images_only: params.images_only,
                     include_thumbnails: params.include_thumbnails,
+                    enforce_path_limit: true,
                 },
-                true,
                 |progress| {
                     let _ = write_export_progress(
                         output,
@@ -1070,6 +1070,7 @@ fn handle_request<W: Write>(
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: params.include_thumbnails,
+                    enforce_path_limit: false,
                 },
                 |progress| {
                     let _ = write_export_progress(

@@ -1972,6 +1972,7 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
             ExportOptions {
                 images_only: false,
                 include_thumbnails: false,
+                enforce_path_limit: false,
             },
             |_| {},
         )
@@ -1996,6 +1997,7 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: false,
+                    enforce_path_limit: false,
                 },
                 |_| {},
             )
@@ -2018,6 +2020,7 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
             ExportOptions {
                 images_only: false,
                 include_thumbnails: false,
+                enforce_path_limit: false,
             },
             |_| {},
         )
@@ -2042,6 +2045,7 @@ fn filtered_export_applies_category_filter_and_reports_empty_result() {
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: false,
+                    enforce_path_limit: false,
                 },
                 |_| {},
             )
@@ -2080,8 +2084,8 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
             ExportOptions {
                 images_only: true,
                 include_thumbnails: true,
+                enforce_path_limit: true,
             },
-            true,
             |value| progress.push(value),
         )
         .unwrap();
@@ -2111,8 +2115,8 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: false,
+                    enforce_path_limit: true,
                 },
-                true,
                 |_| {},
             )
             .is_err()
@@ -2127,8 +2131,8 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: false,
+                    enforce_path_limit: true,
                 },
-                true,
                 |_| {},
             )
             .is_err()
@@ -2166,8 +2170,8 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
             ExportOptions {
                 images_only: true,
                 include_thumbnails: false,
+                enforce_path_limit: true,
             },
-            true,
             |_| {},
         )
         .unwrap();

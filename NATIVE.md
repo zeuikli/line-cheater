@@ -1,6 +1,6 @@
 # Native Core Architecture and Handoff
 
-Last updated: 2026-08-03
+Last updated: 2026-08-10
 
 This document is the durable handoff record for the bounded-memory desktop version
 of LINE Cheater. Keep it updated whenever the native implementation,
@@ -108,6 +108,10 @@ grouped below rather than treated as separate feature changes.
   size/mtime and available SHA-256 evidence are revalidated; HTML escapes chat,
   sender, and message content. Direct `Line.sqlite` sources produce the same
   complete HTML without attachment files.
+- PR45's filtered attachment export keeps the 1,000-path limit for explicit
+  selections while allowing browser-filtered exports to exceed it. The limit is
+  carried by `ExportOptions`, keeping the public and internal export entry
+  points within the CI-enforced Clippy argument limit.
 - Attachment cleanup plans now record `manual`, `automatic`, or `chat` evidence.
   Safe automatic attachment cleanup only marks referenced image originals with
   a matching non-empty thumbnail; it never marks PDFs, videos, missing-thumbnail
