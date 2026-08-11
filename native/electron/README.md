@@ -63,9 +63,11 @@ handle, or arbitrary filesystem methods. The main process:
 - discovers bounded, hash-named session caches, reads their catalog metadata
   read-only, and exposes only complete compatible sessions whose original
   source still exists and has the same file metadata fingerprint;
-- closes the background core and deletes the complete source session after a
-  candidate passes full validation. Candidate output inside the internal cache
-  is rejected before construction.
+- closes the background core after a candidate passes full validation, then
+  retains or deletes the complete source session according to the user's
+  explicit choice. Candidate output inside the internal cache is rejected
+  before construction, and Session deletion never removes source or candidate
+  `.imazingapp` files.
 
 Do not replace this bridge with a general `ipcRenderer.send`, filesystem, shell,
 or child-process API.
@@ -149,7 +151,9 @@ developer machine.
    pass validation; stale or incomplete rows remain visible with a reason.
    Direct session opening trusts that metadata fingerprint to avoid hashing the
    complete archive again. Candidate construction retains the stronger full
-   source-content verification before writing any output.
+   source-content verification before writing any output. Every listed Session
+   also has a guarded delete action that removes only LINE Cheater's managed
+   analysis directory and leaves original/candidate `.imazingapp` files intact.
 3. Show the same blocking spinner/progress treatment as the web app while the
    read-only session, companion databases, attachment catalog, and chat page are
    prepared.
@@ -197,8 +201,9 @@ developer machine.
     category state remains visible with its effective marked/total count.
 14. Choose an output through a native save dialog and build a full-CRC candidate
     with the web-style progress/success/error dialog. After successful output
-    validation, close the source session, clear its private local cache, and
-    return the underlying UI to source selection while keeping the result dialog
+    validation, ask whether the analyzed Session should be retained for direct
+    reuse or deleted to reclaim disk space. Close the source session and return
+    the underlying UI to source selection while keeping the result dialog
     visible.
 15. Turn on the guarded desktop-only Advanced mode to plan deletion of a selected
     chat and its attachments, or use the Advanced sidebar page to include empty

@@ -69,6 +69,7 @@ test("keeps same-version and compatible caches but rebuilds incompatible version
 test("only clears hashed session directories and detects unsafe candidate outputs", (t) => {
   const userData = temporaryUserData(t);
   const source = path.join(userData, "source.imazingapp");
+  fs.writeFileSync(source, "original backup");
   const workDir = sessionWorkDir(userData, source);
   prepareSessionCache(userData, source, "1.0.0");
   assert.equal(
@@ -85,6 +86,7 @@ test("only clears hashed session directories and detects unsafe candidate output
   );
   clearSessionCache(userData, workDir);
   assert.equal(fs.existsSync(workDir), false);
+  assert.equal(fs.readFileSync(source, "utf8"), "original backup");
 });
 
 test("discovers reusable analyzed sessions and validates their original source", (t) => {

@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld("lineNativeBridge", Object.freeze({
     }
     return ipcRenderer.invoke("line-native:open-session", sessionId);
   },
+  deleteSession(sessionId) {
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{64}$/.test(sessionId)) {
+      return Promise.reject(new TypeError("Invalid session ID."));
+    }
+    return ipcRenderer.invoke("line-native:delete-session", sessionId);
+  },
   selectSource(kind) {
     if (!sourceKinds.has(kind)) return Promise.reject(new TypeError("Invalid source kind."));
     return ipcRenderer.invoke("line-native:select-source", kind);
@@ -44,6 +50,12 @@ contextBridge.exposeInMainWorld("lineNativeBridge", Object.freeze({
       return Promise.reject(new TypeError("Invalid candidate output token."));
     }
     return ipcRenderer.invoke("line-native:discard-candidate-output", token);
+  },
+  finalizeCandidateSession(retainSession) {
+    if (typeof retainSession !== "boolean") {
+      return Promise.reject(new TypeError("A Session retention choice is required."));
+    }
+    return ipcRenderer.invoke("line-native:finalize-candidate-session", retainSession);
   },
   cancelOperation() {
     return ipcRenderer.invoke("line-native:cancel-operation");

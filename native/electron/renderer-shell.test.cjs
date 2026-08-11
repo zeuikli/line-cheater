@@ -200,7 +200,7 @@ test("can cancel long-running native work and recover its sidecar", () => {
   assert.match(main, /\.partial/);
 });
 
-test("versions session cache and clears it after a successful candidate build", () => {
+test("versions session cache and asks whether to retain it after a successful candidate build", () => {
   assert.match(main, /prepareSessionCache\(/);
   assert.match(main, /app\.getVersion\(\)/);
   assert.match(sessionCache, /CACHE_VERSION_FILE = "\.line-cheater-cache-version"/);
@@ -212,8 +212,11 @@ test("versions session cache and clears it after a successful candidate build", 
   assert.match(sessionCache, /compatibleVersions\.includes\(previousVersion\)/);
   assert.match(sessionCache, /clearSessionCache\(userDataPath, workDir\)/);
   assert.match(main, /outputFallsInsideSession\(workDir, output\)/);
-  assert.match(main, /const cacheResult = await closeCompletedSession\(client, workDir\)/);
-  assert.match(main, /return \{ \.\.\.result, \.\.\.cacheResult \}/);
+  assert.match(main, /"line-native:finalize-candidate-session"/);
+  assert.match(main, /closeCompletedSession\(client, workDir, retainSession\)/);
+  assert.match(renderer, /要刪除已分析的 Session 嗎/);
+  assert.match(renderer, /bridge\.finalizeCandidateSession\(!deleteSession\)/);
+  assert.match(renderer, /report\.cacheRetained/);
   assert.match(renderer, /function resetAfterCandidateBuild\(\)/);
   assert.match(renderer, /本機快取已清除；下次請重新選擇來源/);
   assert.match(renderer, /setCandidateBuildDisabled\(!provider\)/);
@@ -227,8 +230,10 @@ test("lists and directly opens complete analyzed sessions", () => {
   assert.match(html, /id="refresh-sessions"/);
   assert.match(preload, /listSessions\(\)/);
   assert.match(preload, /openSession\(sessionId\)/);
+  assert.match(preload, /deleteSession\(sessionId\)/);
   assert.match(main, /"line-native:list-sessions"/);
   assert.match(main, /"line-native:open-session"/);
+  assert.match(main, /"line-native:delete-session"/);
   assert.match(main, /readSessionCache\(/);
   assert.match(main, /replaceSidecar\(savedSession\.sourcePath, true\)/);
   assert.match(main, /sidecarArguments\.push\("--reuse-session"\)/);
@@ -240,6 +245,8 @@ test("lists and directly opens complete analyzed sessions", () => {
   assert.match(renderer, /`備份：\$\{session\.sourcePath\}`/);
   assert.match(renderer, /`Session：\$\{session\.sessionPath\}`/);
   assert.match(renderer, /bridge\.openSession\(sessionId\)/);
+  assert.match(renderer, /bridge\.deleteSession\(button\.dataset\.sessionDelete\)/);
+  assert.match(renderer, /原始 LINE\.imazingapp、已生成的瘦身 \.imazingapp/);
   assert.match(renderer, /既有 Session 已載入，不需要重新分析備份/);
   assert.match(renderer, /\["來源路徑", info\.source\.sourcePath\]/);
   assert.match(styles, /\.saved-session-list\s*\{/);

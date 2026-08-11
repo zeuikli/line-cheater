@@ -159,6 +159,12 @@ grouped below rather than treated as separate feature changes.
   content verification during browsing. Export/search reuse the verified
   process state; candidate creation still performs the full source-content
   validation before output.
+- Each welcome-screen Session row has a guarded delete action. It accepts only
+  a validated hash-named managed Session directory, shows an indeterminate
+  progress dialog, and never removes the original or a generated
+  `.imazingapp`. After a candidate passes validation, the desktop asks whether
+  to retain that analyzed Session for direct reuse or delete it to reclaim
+  space; dismissing the prompt keeps the Session.
 
 ## Goal
 

@@ -98,6 +98,7 @@ let mainWindow = null;
 let sidecar = null;
 let activeSource = null;
 let activeOperation = null;
+let pendingCandidateFinalization = null;
 let updateCheckStarted = false;
 let closeConfirmationOpen = false;
 let closeConfirmed = false;
@@ -200,6 +201,7 @@ async function replaceSidecar(source, reuseSession = false) {
   exportOutputTokens.clear();
   conversationOutputTokens.clear();
   previewTokens.clear();
+  pendingCandidateFinalization = null;
   activeSource = path.resolve(source);
   const userDataPath = app.getPath("userData");
   const { workDir } = prepareSessionCache(
@@ -244,26 +246,33 @@ async function replaceSidecar(source, reuseSession = false) {
   return client.ready;
 }
 
-async function closeCompletedSession(client, workDir) {
+async function closeCompletedSession(client, workDir, retainSession = false) {
   if (sidecar === client) sidecar = null;
   activeSource = null;
   outputTokens.clear();
   exportOutputTokens.clear();
   conversationOutputTokens.clear();
   previewTokens.clear();
+  pendingCandidateFinalization = null;
   const warnings = [];
   try {
     await client.dispose();
   } catch (error) {
     warnings.push(`無法完全關閉背景核心：${error.message}`);
   }
-  try {
-    clearSessionCache(app.getPath("userData"), workDir);
-  } catch (error) {
-    warnings.push(`無法刪除本機快取：${error.message}`);
+  let cacheCleared = false;
+  if (!retainSession) {
+    try {
+      clearSessionCache(app.getPath("userData"), workDir);
+      cacheCleared = true;
+    } catch (error) {
+      warnings.push(`無法刪除本機快取：${error.message}`);
+    }
   }
   return {
-    cacheCleared: warnings.length === 0,
+    cacheCleared,
+    cacheRetained: retainSession || !cacheCleared,
+    sessionPath: retainSession ? workDir : null,
     cacheCleanupWarning: warnings.join(" ")
   };
 }
@@ -351,6 +360,52 @@ async function registerIpc() {
     return replaceSidecar(savedSession.sourcePath, true);
   });
 
+  ipcMain.handle("line-native:delete-session", async (event, sessionId) => {
+    assertTrustedSender(event);
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{64}$/.test(sessionId)) {
+      throw new TypeError("Invalid session ID.");
+    }
+    let savedSession;
+    try {
+      savedSession = readSessionCache(
+        app.getPath("userData"),
+        sessionId,
+        app.getVersion(),
+        SESSION_CACHE_COMPATIBLE_VERSIONS
+      );
+    } catch {
+      throw new Error("無法讀取這個 Session；catalog.sqlite 可能已損壞或不完整。");
+    }
+    if (!savedSession) throw new Error("找不到指定的 Session。");
+    const workDir = savedSession.sessionPath;
+    const activeWorkDir = activeSource
+      ? sessionWorkDir(app.getPath("userData"), activeSource)
+      : null;
+    const deletingActiveSession = activeWorkDir &&
+      path.resolve(activeWorkDir) === path.resolve(workDir);
+    if (deletingActiveSession) {
+      if (activeOperation) {
+        throw new Error("此 Session 目前仍有操作正在執行，請等待完成後再刪除。");
+      }
+      const result = await closeCompletedSession(sidecar, workDir, false);
+      return {
+        deleted: result.cacheCleared,
+        activeSessionClosed: true,
+        sourcePath: savedSession.sourcePath,
+        sessionPath: workDir,
+        warning: result.cacheCleanupWarning
+      };
+    }
+    clearSessionCache(app.getPath("userData"), workDir);
+    return {
+      deleted: true,
+      activeSessionClosed: false,
+      sourcePath: savedSession.sourcePath,
+      sessionPath: workDir,
+      warning: ""
+    };
+  });
+
   ipcMain.handle("line-native:select-source", async (event, kind) => {
     assertTrustedSender(event);
     if (!["directory", "archive", "sqlite"].includes(kind)) {
@@ -424,6 +479,27 @@ async function registerIpc() {
       output,
       workDir
     });
+  });
+
+  ipcMain.handle("line-native:finalize-candidate-session", async (event, retainSession) => {
+    assertTrustedSender(event);
+    if (typeof retainSession !== "boolean") {
+      throw new TypeError("A Session retention choice is required.");
+    }
+    if (!sidecar || !activeSource || !pendingCandidateFinalization) {
+      throw new Error("目前沒有等待處理的分析 Session。");
+    }
+    if (activeOperation) {
+      throw new Error("候選檔仍在建立中，尚不能處理分析 Session。");
+    }
+    const { client, workDir } = pendingCandidateFinalization;
+    if (sidecar !== client ||
+        path.resolve(workDir) !== path.resolve(
+          sessionWorkDir(app.getPath("userData"), activeSource)
+        )) {
+      throw new Error("等待處理的分析 Session 已變更，將保留目前的快取。");
+    }
+    return closeCompletedSession(client, workDir, retainSession);
   });
 
   ipcMain.handle("line-native:cancel-operation", async (event) => {
@@ -566,8 +642,8 @@ async function registerIpc() {
       if (method !== "buildCandidate") return result;
       if (result && result.lineSquareRebuildRequired === true) return result;
       outputTokens.delete(candidateOutputToken);
-      const cacheResult = await closeCompletedSession(client, workDir);
-      return { ...result, ...cacheResult };
+      pendingCandidateFinalization = { client, workDir };
+      return { ...result, sessionFinalizationRequired: true };
     } catch (error) {
       if (candidateOutputToken) outputTokens.delete(candidateOutputToken);
       if (exportOutputToken) exportOutputTokens.delete(exportOutputToken);

@@ -203,7 +203,13 @@ h3 { margin: 0; font-size: 1rem; }
 }
 .saved-session-path { color: #475569; }
 .saved-session-cache-path { color: #64748b; }
-.saved-session-open { min-width: 86px; }
+.saved-session-actions {
+  display: grid;
+  min-width: 96px;
+  gap: 6px;
+}
+.saved-session-open,
+.saved-session-delete { width: 100%; }
 .saved-session-empty {
   margin: 0;
   padding: 10px 2px 2px;

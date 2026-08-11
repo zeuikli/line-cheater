@@ -60,6 +60,7 @@ let activeWorkspaceView = "browse";
 let selectedSourceKind = null;
 let sourceGeneration = 0;
 let savedSessionLoading = false;
+let sessionDeletionInProgress = false;
 let messageRenderGeneration = 0;
 let packageInProgress = false;
 let cleanupMutationInProgress = false;
@@ -384,6 +385,8 @@ function renderSavedSessions(sessions) {
         `${sessionDate(session.scanCompletedAt)} · Session ${session.cacheVersion}`
       : `${session.unavailableReason || "Session 不完整"} · Session ${session.cacheVersion || "版本未知"}`;
     main.append(heading, sourcePath, sessionPath, meta);
+    const actions = document.createElement("div");
+    actions.className = "saved-session-actions";
     const open = document.createElement("button");
     open.type = "button";
     open.className = "secondary-button compact-button saved-session-open";
@@ -394,13 +397,25 @@ function renderSavedSessions(sessions) {
       ? `載入 ${session.sourcePath}`
       : session.unavailableReason || "Session 無法直接載入";
     open.textContent = "載入 Session";
-    item.append(main, open);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger-button compact-button saved-session-delete";
+    remove.dataset.sessionDelete = session.id;
+    remove.dataset.sessionName = session.sourceName || sourceDisplayName(
+      session.sourcePath,
+      session.sourceKind
+    );
+    remove.dataset.sessionPath = session.sessionPath;
+    remove.title = "只刪除 LINE Cheater 的分析 Session，不會刪除 .imazingapp";
+    remove.textContent = "刪除 Session";
+    actions.append(open, remove);
+    item.append(main, actions);
     elements.savedSessionList.append(item);
   }
 }
 
 async function loadSavedSessions() {
-  if (savedSessionLoading) return;
+  if (savedSessionLoading || sessionDeletionInProgress) return;
   savedSessionLoading = true;
   elements.refreshSessions.disabled = true;
   try {
@@ -414,6 +429,53 @@ async function loadSavedSessions() {
   } finally {
     savedSessionLoading = false;
     elements.refreshSessions.disabled = false;
+  }
+}
+
+async function deleteSavedSession(button) {
+  if (sessionDeletionInProgress || savedSessionLoading || button.disabled) return;
+  const sessionName = button.dataset.sessionName || "這個備份";
+  const sessionPath = button.dataset.sessionPath || "指定的 Session";
+  if (!await requestConfirmation({
+    title: `刪除「${sessionName}」的分析 Session？`,
+    message:
+      `即將刪除 LINE Cheater 的分析快取：\n${sessionPath}\n\n` +
+      "原始 LINE.imazingapp、已生成的瘦身 .imazingapp 及其中的聊天資料都不會被刪除。" +
+      "未來若再次開啟原始備份，將需要重新掃描及分析。",
+    cancelLabel: "保留 Session",
+    confirmLabel: "刪除 Session",
+    danger: true
+  })) return;
+
+  sessionDeletionInProgress = true;
+  elements.savedSessionList.setAttribute("aria-busy", "true");
+  for (const action of elements.savedSessionList.querySelectorAll("button")) {
+    action.disabled = true;
+  }
+  showOperationModal("正在刪除 Session", `正在清理 ${sessionPath}，請勿重複操作。`);
+  elements.operationModalCancel.classList.add("hidden");
+  await waitForUiPaint();
+  try {
+    const result = await bridge.deleteSession(button.dataset.sessionDelete);
+    if (result?.activeSessionClosed) resetAfterCandidateBuild();
+    if (!result?.deleted) {
+      throw new Error(result?.warning || "Session 未能完全刪除，請重新啟動後再試。");
+    }
+    updateOperationModalProgress(1, 1, "完成");
+    completeOperationModal(false, "分析 Session 已刪除；原始與瘦身 .imazingapp 均未修改。");
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    sessionDeletionInProgress = false;
+    closeOperationModal();
+    setStatus(`已刪除「${sessionName}」的分析 Session；備份 APP 未修改。`);
+    await loadSavedSessions();
+  } catch (error) {
+    sessionDeletionInProgress = false;
+    completeOperationModal(true, error.message);
+    setStatus(`刪除 Session 失敗：${error.message}`, true);
+    await loadSavedSessions();
+  } finally {
+    sessionDeletionInProgress = false;
+    elements.savedSessionList.removeAttribute("aria-busy");
   }
 }
 
@@ -785,7 +847,7 @@ function completeOperationModal(error, message) {
 }
 
 function closeOperationModal() {
-  if (cleanupMutationInProgress || exportInProgress) return;
+  if (cleanupMutationInProgress || exportInProgress || sessionDeletionInProgress) return;
   elements.operationModal.classList.add("hidden");
   elements.operationModal.setAttribute("aria-hidden", "true");
   syncModalBusy();
@@ -4606,6 +4668,28 @@ async function buildCandidate() {
       });
     }
     renderCandidateReport(report);
+    updatePackageModalProgress(100, "瘦身檔已建立，正在等待 Session 保留選擇。");
+    const deleteSession = await requestConfirmation({
+      title: "要刪除已分析的 Session 嗎？",
+      message:
+        "瘦身 .imazingapp 已成功建立。保留 Session 可讓你未來直接載入目前的分析結果，不必重新掃描大型備份。\n\n" +
+        "選擇刪除只會清理 LINE Cheater 的本機分析快取；原始備份與剛建立的瘦身 .imazingapp 都不會被刪除。",
+      cancelLabel: "保留 Session",
+      confirmLabel: "刪除 Session",
+      danger: true
+    });
+    try {
+      const cacheResult = await bridge.finalizeCandidateSession(!deleteSession);
+      report = { ...report, ...cacheResult };
+    } catch (error) {
+      report = {
+        ...report,
+        cacheCleared: false,
+        cacheRetained: true,
+        cacheCleanupWarning: `無法完成 Session 關閉程序：${error.message}`
+      };
+    }
+    renderCandidateReport(report);
     let successMessage =
       `候選檔完成：保留 ${report.outputEntries.toLocaleString()} 筆、` +
       `移除 ${report.removedEntries.toLocaleString()} 個檔案項目、` +
@@ -4615,12 +4699,22 @@ async function buildCandidate() {
     if (report.linkedDuplicateEntries > 0) {
       successMessage += " 此候選檔使用實驗性 symbolic link，請先以 iMazing 測試還原。";
     }
-    if (report.cacheCleared) {
+    if (report.cacheRetained) {
+      successMessage += report.sessionPath
+        ? ` 已保留分析 Session：${report.sessionPath}。`
+        : " 分析 Session 已保留；未來可從歡迎頁直接載入。";
+      if (report.cacheCleanupWarning) {
+        successMessage += ` 注意：${report.cacheCleanupWarning}。`;
+      }
+    } else if (report.cacheCleared) {
       successMessage += " LINE Cheater 的本機快取已清除；下次請重新選擇來源。";
     } else {
       successMessage +=
         ` 候選檔已成功，但本機快取未能完全清除：` +
         `${report.cacheCleanupWarning || "請重新啟動 LINE Cheater 後再試。"}。`;
+    }
+    if (!report.cacheRetained && report.cacheCleared && report.cacheCleanupWarning) {
+      successMessage += ` 注意：${report.cacheCleanupWarning}。`;
     }
     setStatus(successMessage);
     packageInProgress = false;
@@ -4665,6 +4759,11 @@ for (const button of document.querySelectorAll("[data-source]")) {
 }
 elements.refreshSessions.addEventListener("click", () => void loadSavedSessions());
 elements.savedSessionList.addEventListener("click", (event) => {
+  const deleteButton = event.target.closest("button[data-session-delete]");
+  if (deleteButton) {
+    void deleteSavedSession(deleteButton);
+    return;
+  }
   const button = event.target.closest("button[data-session-open]");
   if (!button || button.disabled) return;
   void openSource(button.dataset.sessionKind, button.dataset.sessionOpen);
@@ -4799,7 +4898,7 @@ document.addEventListener("keydown", (event) => {
   else if (openModal === elements.imageModal) void requestModalClose("image");
   else if (openModal === elements.restoreChecklistModal) void requestRestoreChecklistCancellation();
   else if (openModal === elements.operationModal &&
-           !cleanupMutationInProgress && !exportInProgress) {
+           !cleanupMutationInProgress && !exportInProgress && !sessionDeletionInProgress) {
     void requestModalClose("operation");
   } else if (openModal === elements.packageModal && !packageInProgress) {
     void requestModalClose("package");
