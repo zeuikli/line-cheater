@@ -119,6 +119,32 @@ test("validates and forwards bounded attachment exports", async () => {
   }), TypeError);
 });
 
+test("validates and forwards complete conversation exports", async () => {
+  const calls = [];
+  const provider = new NativeDataProvider({
+    request: async (method, params) => {
+      calls.push({ method, params });
+      return { outputName: "LINE-conversation.zip", messages: 4, attachments: 2 };
+    }
+  });
+  await provider.exportConversation({
+    output: "conversation-token",
+    source: "square",
+    chatPk: 8
+  });
+  assert.deepEqual(calls[0], {
+    method: "exportConversation",
+    params: {
+      output: "conversation-token",
+      source: "square",
+      chatPk: 8
+    }
+  });
+  assert.throws(() => provider.exportConversation({ source: "line", chatPk: 7 }), TypeError);
+  assert.throws(() => provider.exportConversation({ output: "x", source: "bad", chatPk: 7 }), TypeError);
+  assert.throws(() => provider.exportConversation({ output: "x", source: "line", chatPk: "no" }), TypeError);
+});
+
 test("normalizes duplicate digest requests", async () => {
   const calls = [];
   const provider = new NativeDataProvider({

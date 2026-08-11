@@ -112,6 +112,35 @@ fn add_many_attachment_contexts(source: &Path, count: u32) {
     connection.close().unwrap();
 }
 
+fn add_many_text_messages(source: &Path, count: u32) {
+    let line_database = source.join(inspect_source(source).unwrap().database_path);
+    let mut connection = Connection::open(&line_database).unwrap();
+    let transaction = connection.transaction().unwrap();
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO ZMESSAGE (
+                    Z_PK, ZID, ZTIMESTAMP, ZCHAT, ZSENDER, ZSENDSTATUS,
+                    ZCONTENTTYPE, ZMESSAGETYPE, ZTEXT, ZLATITUDE, ZLONGITUDE
+                ) VALUES (?1, ?2, ?3, 7, 1, 0, 0, 'R', ?4, NULL, NULL)",
+            )
+            .unwrap();
+        for offset in 0..count {
+            let pk = 10_000_i64 + i64::from(offset);
+            insert
+                .execute(params![
+                    pk,
+                    format!("bulk-{offset}"),
+                    1_000_i64 + i64::from(offset),
+                    format!("bulk message {offset}")
+                ])
+                .unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+    connection.close().unwrap();
+}
+
 fn add_square_fixture(source: &Path) {
     let line_database = source.join(inspect_source(source).unwrap().database_path);
     let square_database = line_database.with_file_name("LineSquare.sqlite");
@@ -2259,6 +2288,121 @@ fn stages_bounded_image_previews_from_directory_and_archive() {
 }
 
 #[test]
+fn filtered_export_applies_category_filter_and_reports_empty_result() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    let prepared = prepare_source(&source, &temporary.path().join("filtered-work")).unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let catalog_path = temporary.path().join("filtered-export/catalog.sqlite");
+    let mut catalog = Catalog::open(&catalog_path).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    catalog
+        .index_attachment_contexts(&database, None, None, |_| {})
+        .unwrap();
+    let export_root = temporary.path().join("filtered-exports");
+    fs::create_dir_all(&export_root).unwrap();
+
+    // Include only images: exports the referenced image original into a fresh folder.
+    let output = export_root.join("images");
+    let report = catalog
+        .export_filtered_attachments(
+            &source,
+            SourceKind::Directory,
+            None,
+            None,
+            &[],
+            &[],
+            &["image".to_string()],
+            &[],
+            &output,
+            ExportOptions {
+                images_only: false,
+                include_thumbnails: false,
+                enforce_path_limit: false,
+            },
+            |_| {},
+        )
+        .unwrap();
+    assert!(report.exported_files >= 1);
+    assert!(output.join("12345678.jpg").is_file());
+
+    // Excluding the chat that owns the image leaves nothing to export.
+    let excluded_output = export_root.join("chat-excluded");
+    assert!(
+        catalog
+            .export_filtered_attachments(
+                &source,
+                SourceKind::Directory,
+                None,
+                None,
+                &[],
+                &["line:7".to_string()],
+                &[],
+                &[],
+                &excluded_output,
+                ExportOptions {
+                    images_only: false,
+                    include_thumbnails: false,
+                    enforce_path_limit: false,
+                },
+                |_| {},
+            )
+            .is_err()
+    );
+
+    // Including that same chat exports the image again.
+    let included_output = export_root.join("chat-included");
+    let included = catalog
+        .export_filtered_attachments(
+            &source,
+            SourceKind::Directory,
+            None,
+            None,
+            &["line:7".to_string()],
+            &[],
+            &[],
+            &[],
+            &included_output,
+            ExportOptions {
+                images_only: false,
+                include_thumbnails: false,
+                enforce_path_limit: false,
+            },
+            |_| {},
+        )
+        .unwrap();
+    assert!(included.exported_files >= 1);
+    assert!(included_output.join("12345678.jpg").is_file());
+
+    // A category with no matching attachments is reported as an error, not an empty folder.
+    let empty_output = export_root.join("voice");
+    assert!(
+        catalog
+            .export_filtered_attachments(
+                &source,
+                SourceKind::Directory,
+                None,
+                None,
+                &[],
+                &[],
+                &["voice".to_string()],
+                &[],
+                &empty_output,
+                ExportOptions {
+                    images_only: false,
+                    include_thumbnails: false,
+                    enforce_path_limit: false,
+                },
+                |_| {},
+            )
+            .is_err()
+    );
+    assert!(!empty_output.exists());
+}
+
+#[test]
 fn exports_selected_images_from_directory_and_archive_without_overwriting_source() {
     let temporary = TempDir::new().unwrap();
     let source = make_fixture(temporary.path());
@@ -2288,6 +2432,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
             ExportOptions {
                 images_only: true,
                 include_thumbnails: true,
+                enforce_path_limit: true,
             },
             |value| progress.push(value),
         )
@@ -2318,6 +2463,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: false,
+                    enforce_path_limit: true,
                 },
                 |_| {},
             )
@@ -2333,6 +2479,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
                 ExportOptions {
                     images_only: false,
                     include_thumbnails: false,
+                    enforce_path_limit: true,
                 },
                 |_| {},
             )
@@ -2371,6 +2518,7 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
             ExportOptions {
                 images_only: true,
                 include_thumbnails: false,
+                enforce_path_limit: true,
             },
             |_| {},
         )
@@ -2541,6 +2689,77 @@ fn sidecar_protocol_returns_bounded_pages_and_structured_errors() {
         .unwrap();
     assert_eq!(indexed_chats, 2);
     assert_eq!(response("8")["result"]["shuttingDown"], true);
+}
+
+#[test]
+fn exports_a_complete_offline_conversation_zip_from_first_message_to_last() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    add_many_text_messages(&source, 1_001);
+    let work = temporary.path().join("conversation-work");
+    let output_path = temporary.path().join("Alice-conversation.zip");
+    let mut session = NativeSession::open(&source, &work).unwrap();
+    let requests = [
+        serde_json::json!({
+            "id": "scan",
+            "jobId": "scan-job",
+            "method": "scanCatalog"
+        }),
+        serde_json::json!({
+            "id": "export",
+            "jobId": "export-job",
+            "method": "exportConversation",
+            "params": {
+                "output": output_path,
+                "source": "line",
+                "chatPk": 7
+            }
+        }),
+        serde_json::json!({ "id": "shutdown", "method": "shutdown" }),
+    ]
+    .into_iter()
+    .map(|request| request.to_string())
+    .collect::<Vec<_>>()
+    .join("\n")
+        + "\n";
+    let mut input = std::io::BufReader::new(requests.as_bytes());
+    let mut protocol_output = Vec::new();
+    serve(&mut session, &mut input, &mut protocol_output).unwrap();
+    let events = String::from_utf8(protocol_output).unwrap();
+    let export_response = events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|row| row["id"] == "export")
+        .expect("conversation export response exists");
+    assert_eq!(export_response["ok"], true);
+    assert_eq!(export_response["result"]["messages"], 1_005);
+    assert_eq!(export_response["result"]["attachments"], 2);
+    assert!(events.contains("conversationExportProgress"));
+    assert!(!PathBuf::from(format!("{}.partial", output_path.display())).exists());
+
+    let mut archive = zip::ZipArchive::new(fs::File::open(&output_path).unwrap()).unwrap();
+    let attachment_entries = (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .filter(|name| name.starts_with("attachments/"))
+        .collect::<Vec<_>>();
+    assert_eq!(attachment_entries.len(), 2);
+    let mut html = String::new();
+    archive
+        .by_name("index.html")
+        .unwrap()
+        .read_to_string(&mut html)
+        .unwrap();
+    let first = html.find(">first</p>").unwrap();
+    let same_time = html.find(">same time</p>").unwrap();
+    let second = html.find(">second</p>").unwrap();
+    let photo = html.find(">photo context</p>").unwrap();
+    assert!(first < same_time && same_time < second && second < photo);
+    let first_bulk = html.find(">bulk message 0</p>").unwrap();
+    let last_bulk = html.find(">bulk message 1000</p>").unwrap();
+    assert!(photo < first_bulk && first_bulk < last_bulk);
+    for entry in attachment_entries {
+        assert!(html.contains(&entry));
+    }
 }
 
 #[test]

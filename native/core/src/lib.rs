@@ -1,5 +1,6 @@
 pub mod candidate;
 pub mod catalog;
+mod conversation;
 pub mod database;
 pub mod model;
 pub mod performance;
@@ -20,9 +21,10 @@ pub use model::{
     AttachmentPage, AttachmentPreview, CatalogStats, Chat, ChatCursor, ChatPage, CleanupActivity,
     CleanupAuditReport, CleanupCategoryActionState, CleanupCategoryTotal, CleanupGroup,
     CleanupGroupPage, CleanupOverview, CleanupPlanPreview, CleanupPlanSnapshot,
-    CleanupPreflightReport, CleanupReview, CleanupReviewPage, CleanupRisk, DuplicateGroup,
-    DuplicateGroupCursor, DuplicateGroupPage, DuplicateHashProgress, DuplicateMemberPage,
-    ExportProgress, ExportReport, Message, MessageAttachment, MessageCursor, MessagePage,
+    CleanupPreflightReport, CleanupReview, CleanupReviewPage, CleanupRisk,
+    ConversationExportProgress, ConversationExportReport, DuplicateGroup, DuplicateGroupCursor,
+    DuplicateGroupPage, DuplicateHashProgress, DuplicateMemberPage, ExportProgress, ExportReport,
+    Message, MessageAttachment, MessageCursor, MessagePage,
 };
 pub use performance::{PerformanceProfile, system_performance_profile};
 pub use server::{NativeSession, serve};
