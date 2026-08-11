@@ -273,6 +273,12 @@ impl Catalog {
                 marked_at INTEGER NOT NULL,
                 PRIMARY KEY(scope, scope_key, action)
             );
+            CREATE TABLE IF NOT EXISTS cleanup_delete_all_group_exclusion (
+                scope_key TEXT NOT NULL,
+                group_key TEXT NOT NULL,
+                marked_at INTEGER NOT NULL,
+                PRIMARY KEY(scope_key, group_key)
+            );
             CREATE TABLE IF NOT EXISTS cleanup_keep_thumbnail_group (
                 group_key TEXT PRIMARY KEY,
                 marked_at INTEGER NOT NULL
@@ -851,17 +857,9 @@ impl Catalog {
             &format!(
                 "DELETE FROM cleanup_bulk_action
                  WHERE action = 'delete_all'
-                   AND (
-                       (scope = 'group' AND scope_key = (
-                           SELECT {CLEANUP_GROUP_EXPR} FROM files f WHERE f.path = ?1
-                       ))
-                       OR
-                       (scope = 'category' AND (
-                           scope_key = 'all'
-                           OR scope_key = (
-                               SELECT {CLEANUP_CATEGORY_EXPR} FROM files f WHERE f.path = ?1
-                           )
-                       ))
+                   AND scope = 'group'
+                   AND scope_key = (
+                       SELECT {CLEANUP_GROUP_EXPR} FROM files f WHERE f.path = ?1
                    )"
             ),
             [path],
@@ -943,6 +941,7 @@ impl Catalog {
             &mut on_progress,
         )?;
         transaction.execute("DELETE FROM cleanup_bulk_action", [])?;
+        transaction.execute("DELETE FROM cleanup_delete_all_group_exclusion", [])?;
         transaction.execute("DELETE FROM cleanup_keep_thumbnail_group", [])?;
         transaction.commit()?;
         self.record_cleanup_activity(
@@ -2786,6 +2785,7 @@ impl Catalog {
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute("DELETE FROM removal_plan", [])?;
         transaction.execute("DELETE FROM cleanup_bulk_action", [])?;
+        transaction.execute("DELETE FROM cleanup_delete_all_group_exclusion", [])?;
         transaction.execute("DELETE FROM cleanup_keep_thumbnail_group", [])?;
         transaction.execute("DELETE FROM chat_removal_files", [])?;
         transaction.execute("DELETE FROM chat_removal_plan", [])?;
@@ -3428,10 +3428,16 @@ impl Catalog {
                                WHERE bulk_action.action = 'delete_all'
                                  AND (
                                      (bulk_action.scope = 'group'
-                                      AND bulk_action.scope_key = base.group_key)
+                                     AND bulk_action.scope_key = base.group_key)
                                      OR
                                      (bulk_action.scope = 'category'
-                                      AND bulk_action.scope_key IN ('all', base.category))
+                                      AND bulk_action.scope_key IN ('all', base.category)
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM cleanup_delete_all_group_exclusion exclusion
+                                          WHERE exclusion.scope_key = bulk_action.scope_key
+                                            AND exclusion.group_key = base.group_key
+                                      ))
                                  )
                            )
                            THEN 1 ELSE 0
@@ -3713,6 +3719,7 @@ impl Catalog {
             keeping_thumbnails,
             deleting_all_attachments,
             group_category,
+            category_delete_rule_active,
         ) = self.connection.query_row(
             &format!(
                 "
@@ -3727,15 +3734,29 @@ impl Catalog {
                                WHERE bulk_action.action = 'delete_all'
                                  AND (
                                      (bulk_action.scope = 'group'
-                                      AND bulk_action.scope_key = ?1)
+                                     AND bulk_action.scope_key = ?1)
                                      OR
                                      (bulk_action.scope = 'category'
                                       AND bulk_action.scope_key IN (
                                           'all', ({CLEANUP_CATEGORY_EXPR})
+                                      )
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM cleanup_delete_all_group_exclusion exclusion
+                                          WHERE exclusion.scope_key = bulk_action.scope_key
+                                            AND exclusion.group_key = ?1
                                       ))
                                  )
                            ),
-                           MAX({CLEANUP_CATEGORY_EXPR})
+                           MAX({CLEANUP_CATEGORY_EXPR}),
+                           EXISTS (
+                               SELECT 1 FROM cleanup_bulk_action category_action
+                               WHERE category_action.scope = 'category'
+                                 AND category_action.action = 'delete_all'
+                                 AND category_action.scope_key IN (
+                                     'all', ({CLEANUP_CATEGORY_EXPR})
+                                 )
+                           )
                     FROM files f
                     WHERE {predicate}
                     "
@@ -3748,6 +3769,7 @@ impl Catalog {
                     row.get::<_, i64>(2)? != 0,
                     row.get::<_, i64>(3)? != 0,
                     row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)? != 0,
                 ))
             },
         )?;
@@ -3761,12 +3783,22 @@ impl Catalog {
                 transaction.execute(
                     "DELETE FROM cleanup_bulk_action
                      WHERE action = 'delete_all'
-                       AND (
-                           (scope = 'group' AND scope_key = ?1)
-                           OR
-                           (scope = 'category' AND scope_key IN ('all', ?2))
-                       )",
-                    params![group_key, group_category],
+                       AND scope = 'group'
+                       AND scope_key = ?1",
+                    [group_key],
+                )?;
+                transaction.execute(
+                    "INSERT INTO cleanup_delete_all_group_exclusion(
+                         scope_key, group_key, marked_at
+                     )
+                     SELECT scope_key, ?1, ?3
+                     FROM cleanup_bulk_action
+                     WHERE scope = 'category'
+                       AND action = 'delete_all'
+                       AND scope_key IN ('all', ?2)
+                     ON CONFLICT(scope_key, group_key) DO UPDATE SET
+                         marked_at = excluded.marked_at",
+                    params![group_key, group_category, unix_seconds()],
                 )?;
                 operations.push((format!("{predicate} AND direct.reason = 'manual'"), false));
                 if keeping_thumbnails {
@@ -3780,13 +3812,22 @@ impl Catalog {
                     ));
                 }
             } else {
-                transaction.execute(
-                    "INSERT INTO cleanup_bulk_action(scope, scope_key, action, marked_at)
-                     VALUES ('group', ?1, 'delete_all', ?2)
-                     ON CONFLICT(scope, scope_key, action) DO UPDATE SET
-                         marked_at = excluded.marked_at",
-                    params![group_key, unix_seconds()],
-                )?;
+                if category_delete_rule_active {
+                    transaction.execute(
+                        "DELETE FROM cleanup_delete_all_group_exclusion
+                         WHERE group_key = ?1
+                           AND scope_key IN ('all', ?2)",
+                        params![group_key, group_category],
+                    )?;
+                } else {
+                    transaction.execute(
+                        "INSERT INTO cleanup_bulk_action(scope, scope_key, action, marked_at)
+                         VALUES ('group', ?1, 'delete_all', ?2)
+                         ON CONFLICT(scope, scope_key, action) DO UPDATE SET
+                             marked_at = excluded.marked_at",
+                        params![group_key, unix_seconds()],
+                    )?;
+                }
                 if keeping_thumbnails {
                     operations.push((
                         format!("{predicate} AND NOT ({NONEMPTY_THUMBNAIL_EXPR})"),
@@ -3947,6 +3988,11 @@ impl Catalog {
                          marked_at = excluded.marked_at",
                     params![category, unix_seconds()],
                 )?;
+                transaction.execute(
+                    "DELETE FROM cleanup_delete_all_group_exclusion
+                     WHERE scope_key = ?1",
+                    [category],
+                )?;
             }
             "clear_delete_all" => {
                 transaction.execute(
@@ -3954,6 +4000,11 @@ impl Catalog {
                      WHERE scope = 'category'
                        AND action = 'delete_all'
                        AND (scope_key = ?1 OR (?1 <> 'all' AND scope_key = 'all'))",
+                    [category],
+                )?;
+                transaction.execute(
+                    "DELETE FROM cleanup_delete_all_group_exclusion
+                     WHERE scope_key = ?1 OR (?1 <> 'all' AND scope_key = 'all')",
                     [category],
                 )?;
             }
@@ -3974,7 +4025,13 @@ impl Catalog {
                         AND delete_action.scope_key = ({CLEANUP_GROUP_EXPR}))
                        OR
                        (delete_action.scope = 'category'
-                        AND delete_action.scope_key IN ('all', ({CLEANUP_CATEGORY_EXPR})))
+                        AND delete_action.scope_key IN ('all', ({CLEANUP_CATEGORY_EXPR}))
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM cleanup_delete_all_group_exclusion exclusion
+                            WHERE exclusion.scope_key = delete_action.scope_key
+                              AND exclusion.group_key = ({CLEANUP_GROUP_EXPR})
+                        ))
                    )
              )"
         );
@@ -4197,8 +4254,7 @@ impl Catalog {
             protected_thumbnail_count: protected_thumbnail_candidate_count,
             chat_count,
             planned_chat_count,
-            keeping_all_thumbnails: thumbnail_candidate_count > 0
-                && protected_thumbnail_candidate_count == thumbnail_candidate_count,
+            keeping_all_thumbnails: protected_thumbnail_candidate_count > 0,
             deleting_all_attachments: attachment_count > 0 && deleting_all_attachments,
             deleting_all_chats: chat_count > 0 && planned_chat_count == chat_count,
         })
@@ -4572,6 +4628,12 @@ impl Catalog {
                                  (bulk_action.scope = 'category'
                                   AND bulk_action.scope_key IN (
                                       'all', ({CLEANUP_CATEGORY_EXPR})
+                                  )
+                                  AND NOT EXISTS (
+                                      SELECT 1
+                                      FROM cleanup_delete_all_group_exclusion exclusion
+                                      WHERE exclusion.scope_key = bulk_action.scope_key
+                                        AND exclusion.group_key = ?1
                                   ))
                              )
                        )

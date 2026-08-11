@@ -576,6 +576,7 @@ test("offers keep-thumbnail for every group with a non-empty thumbnail", () => {
   assert.match(renderer, /keepingThumbnails \? "刪除縮圖以外附件" : "刪除所有附件"/);
   assert.match(renderer, /hasProtectedThumbnails \? "取消刪除其他附件"/);
   assert.match(renderer, /protectedThumbnailCount/);
+  assert.match(renderer, /分類批次刪除仍啟用/);
 });
 
 test("lists no-attachment chats only in advanced cleanup mode", () => {

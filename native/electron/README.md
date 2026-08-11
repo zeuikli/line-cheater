@@ -188,7 +188,9 @@ developer machine.
     delete-all / keep-thumbnail group actions. Active thumbnail protection shows
     its protected count; when combined with delete-all, the UI describes the
     effective result as deleting the other attachments instead of implying that
-    protected thumbnails will also be removed.
+    protected thumbnails will also be removed. A chat can opt out of an active
+    category delete-all rule without cancelling that rule for the other chats;
+    category state remains visible with its effective marked/total count.
 13. Choose an output through a native save dialog and build a full-CRC candidate
     with the web-style progress/success/error dialog. After successful output
     validation, close the source session, clear its private local cache, and

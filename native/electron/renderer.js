@@ -2639,14 +2639,16 @@ function renderCategoryBulkActions() {
   const deletingAllChats = Boolean(actionState?.deletingAllChats);
   const thumbnailCandidateCount = Number(actionState?.thumbnailCandidateCount) || 0;
   const protectedThumbnailCount = Number(actionState?.protectedThumbnailCount) || 0;
+  const attachmentCount = Number(actionState?.attachmentCount) || 0;
+  const markedAttachmentCount = Number(actionState?.markedAttachmentCount) || 0;
   const hasProtectedThumbnails = protectedThumbnailCount > 0;
   elements.categoryBulkTitle.textContent = `${label}快速設定`;
   elements.categoryBulkDescription.textContent = !actionState
     ? "正在確認目前的批次設定…"
     : deletingAllAttachments && hasProtectedThumbnails
-      ? `已保留 ${protectedThumbnailCount.toLocaleString()} 個縮圖，並將其餘附件加入清理計畫。`
+      ? `分類批次刪除仍啟用：已保留 ${protectedThumbnailCount.toLocaleString()} 個縮圖，目前標記 ${markedAttachmentCount.toLocaleString()} / ${attachmentCount.toLocaleString()} 個附件。`
       : deletingAllAttachments
-        ? "已將這個分類的所有附件加入清理計畫；按相同按鈕即可批量取消。"
+        ? `分類批次刪除仍啟用：目前標記 ${markedAttachmentCount.toLocaleString()} / ${attachmentCount.toLocaleString()} 個附件；聊天室可個別取消。`
         : hasProtectedThumbnails
           ? `已保留 ${protectedThumbnailCount.toLocaleString()} / ${thumbnailCandidateCount.toLocaleString()} 個非空縮圖。`
           : deletingAllChats
