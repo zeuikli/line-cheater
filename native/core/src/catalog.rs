@@ -4194,6 +4194,7 @@ impl Catalog {
             attachment_count,
             marked_attachment_count,
             thumbnail_candidate_count,
+            protected_thumbnail_count: protected_thumbnail_candidate_count,
             chat_count,
             planned_chat_count,
             keeping_all_thumbnails: thumbnail_candidate_count > 0

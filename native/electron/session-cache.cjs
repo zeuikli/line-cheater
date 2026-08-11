@@ -119,6 +119,7 @@ function readSessionCache(userDataPath, sessionKey, appVersion, compatibleVersio
 
   const session = {
     id: sessionKey,
+    sessionPath: workDir,
     sourcePath,
     sourceKind,
     sourceName: path.basename(sourcePath) || sourcePath,

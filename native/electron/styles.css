@@ -202,6 +202,7 @@ h3 { margin: 0; font-size: 1rem; }
   white-space: nowrap;
 }
 .saved-session-path { color: #475569; }
+.saved-session-cache-path { color: #64748b; }
 .saved-session-open { min-width: 86px; }
 .saved-session-empty {
   margin: 0;
@@ -789,6 +790,7 @@ progress { width: 100%; height: 8px; }
 .cleanup-group-main small { overflow: hidden; color: var(--muted); font-size: 0.72rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .cleanup-group-main > span:last-child { color: var(--muted); font-size: 0.75rem; }
 .cleanup-group-main b { color: #c2410c; }
+.cleanup-group-main b.cleanup-kept-count { color: #0f766e; }
 .cleanup-plan-badge { padding: 2px 6px; border-radius: 999px; font-size: 0.63rem; font-weight: 800; }
 .cleanup-plan-badge.automatic { color: #0f766e; background: #ccfbf1; }
 .cleanup-plan-badge.manual { color: #7c3aed; background: #ede9fe; }

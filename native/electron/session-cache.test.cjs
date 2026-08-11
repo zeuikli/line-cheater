@@ -115,6 +115,7 @@ test("discovers reusable analyzed sessions and validates their original source",
 
   let sessions = listSessionCaches(userData, "1.2.6", ["1.2.5"]);
   assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].sessionPath, workDir);
   assert.equal(sessions[0].sourcePath, path.resolve(source));
   assert.equal(sessions[0].sourceKind, "archive");
   assert.equal(sessions[0].attachmentCount, 2);

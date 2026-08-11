@@ -257,6 +257,7 @@ pub struct CleanupCategoryActionState {
     pub attachment_count: u64,
     pub marked_attachment_count: u64,
     pub thumbnail_candidate_count: u64,
+    pub protected_thumbnail_count: u64,
     pub chat_count: u64,
     pub planned_chat_count: u64,
     pub keeping_all_thumbnails: bool,

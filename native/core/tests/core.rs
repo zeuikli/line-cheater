@@ -1201,6 +1201,10 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
     assert!(community.keeping_thumbnails);
     let all_action_state = catalog.cleanup_category_action_state("all").unwrap();
     assert!(all_action_state.keeping_all_thumbnails);
+    assert_eq!(
+        all_action_state.protected_thumbnail_count,
+        all_action_state.thumbnail_candidate_count
+    );
     assert!(!all_action_state.deleting_all_attachments);
 
     let mut clear_thumbnail_progress = Vec::new();
@@ -1237,6 +1241,7 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
     let community_state = catalog.cleanup_category_action_state("community").unwrap();
     assert!(community_state.keeping_all_thumbnails);
     assert!(community_state.deleting_all_attachments);
+    assert_eq!(community_state.protected_thumbnail_count, 1);
     let community_files = catalog
         .list_cleanup_groups(1, 24, None, "all", "community", "recent")
         .unwrap()
@@ -1282,6 +1287,7 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
     let community_state = catalog.cleanup_category_action_state("community").unwrap();
     assert!(!community_state.keeping_all_thumbnails);
     assert!(community_state.deleting_all_attachments);
+    assert_eq!(community_state.protected_thumbnail_count, 0);
     assert_eq!(community_state.marked_attachment_count, 2);
 
     let mut clear_attachment_progress = Vec::new();

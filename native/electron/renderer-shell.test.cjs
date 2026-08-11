@@ -232,7 +232,10 @@ test("lists and directly opens complete analyzed sessions", () => {
   assert.match(sessionCache, /function listSessionCaches\(/);
   assert.match(sessionCache, /source_fingerprint/);
   assert.match(sessionCache, /session\.reusable = !session\.unavailableReason/);
+  assert.match(sessionCache, /sessionPath: workDir/);
   assert.match(renderer, /function renderSavedSessions\(sessions\)/);
+  assert.match(renderer, /`備份：\$\{session\.sourcePath\}`/);
+  assert.match(renderer, /`Session：\$\{session\.sessionPath\}`/);
   assert.match(renderer, /bridge\.openSession\(sessionId\)/);
   assert.match(renderer, /既有 Session 已載入，不需要重新分析備份/);
   assert.match(renderer, /\["來源路徑", info\.source\.sourcePath\]/);
@@ -569,6 +572,10 @@ test("offers keep-thumbnail for every group with a non-empty thumbnail", () => {
   assert.doesNotMatch(renderer, /group\.thumbnailBackedImageCount > 0/);
   assert.match(renderer, /group\.chatKind === "community"/);
   assert.match(renderer, /沒有非空縮圖/);
+  assert.match(renderer, /已保留 \$\{group\.nonemptyThumbnailCount\.toLocaleString\(\)\} 個縮圖/);
+  assert.match(renderer, /keepingThumbnails \? "刪除縮圖以外附件" : "刪除所有附件"/);
+  assert.match(renderer, /hasProtectedThumbnails \? "取消刪除其他附件"/);
+  assert.match(renderer, /protectedThumbnailCount/);
 });
 
 test("lists no-attachment chats only in advanced cleanup mode", () => {

@@ -142,7 +142,8 @@ developer machine.
    native core for diagnostics but is intentionally hidden from the end-user
    welcome screen.
 2. List complete analyzed sessions below the source buttons. Each row shows the
-   original backup path, attachment count, scan time, and cache version. A
+   original backup path, managed session-directory path, attachment count, scan
+   time, and cache version. A
    session can be opened directly only after its hashed directory, source file,
    metadata fingerprint, compatible version, scan status, and context status
    pass validation; stale or incomplete rows remain visible with a reason.
@@ -184,7 +185,10 @@ developer machine.
     with message/file controls below. A loaded thumbnail is a keyboard-focusable
     zoom button and opens the same full-size image modal used by chat messages.
 12. Mark original attachments and thumbnails independently, or use the reversible
-   delete-all / keep-thumbnail group actions.
+    delete-all / keep-thumbnail group actions. Active thumbnail protection shows
+    its protected count; when combined with delete-all, the UI describes the
+    effective result as deleting the other attachments instead of implying that
+    protected thumbnails will also be removed.
 13. Choose an output through a native save dialog and build a full-CRC candidate
     with the web-style progress/success/error dialog. After successful output
     validation, close the source session, clear its private local cache, and
