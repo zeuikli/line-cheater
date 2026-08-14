@@ -16,8 +16,10 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const {
   clearSessionCache,
+  listSessionCaches,
   outputFallsInsideSession,
   prepareSessionCache,
+  readSessionCache,
   sessionWorkDir
 } = require("./session-cache.cjs");
 const { SidecarClient } = require("./sidecar-client.cjs");
@@ -96,6 +98,7 @@ let mainWindow = null;
 let sidecar = null;
 let activeSource = null;
 let activeOperation = null;
+let pendingCandidateFinalization = null;
 let updateCheckStarted = false;
 let closeConfirmationOpen = false;
 let closeConfirmed = false;
@@ -105,7 +108,7 @@ const conversationOutputTokens = new Map();
 const previewTokens = new Map();
 const MAX_PREVIEW_TOKENS = 128;
 const MAX_PREVIEW_BYTES = 16 * 1024 * 1024;
-const SESSION_CACHE_COMPATIBLE_VERSIONS = ["0.1.23"];
+const SESSION_CACHE_COMPATIBLE_VERSIONS = ["0.1.23", "0.1.24", "0.1.25", "0.1.26"];
 
 async function checkForUpdates() {
   if (updateCheckStarted || !app.isPackaged) return;
@@ -188,7 +191,7 @@ function sourceDialogOptions(kind) {
   };
 }
 
-async function replaceSidecar(source) {
+async function replaceSidecar(source, reuseSession = false) {
   if (sidecar) {
     const previous = sidecar;
     sidecar = null;
@@ -198,6 +201,7 @@ async function replaceSidecar(source) {
   exportOutputTokens.clear();
   conversationOutputTokens.clear();
   previewTokens.clear();
+  pendingCandidateFinalization = null;
   activeSource = path.resolve(source);
   const userDataPath = app.getPath("userData");
   const { workDir } = prepareSessionCache(
@@ -206,10 +210,12 @@ async function replaceSidecar(source) {
     app.getVersion(),
     SESSION_CACHE_COMPATIBLE_VERSIONS
   );
-  const client = new SidecarClient(rustBinaryPath(), [
+  const sidecarArguments = [
     "--work-dir", workDir,
     "serve", "--source", activeSource
-  ]);
+  ];
+  if (reuseSession) sidecarArguments.push("--reuse-session");
+  const client = new SidecarClient(rustBinaryPath(), sidecarArguments);
   client.on("sidecarEvent", (event) => {
     if (event.event !== "ready" && mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("line-native:event", event);
@@ -240,26 +246,33 @@ async function replaceSidecar(source) {
   return client.ready;
 }
 
-async function closeCompletedSession(client, workDir) {
+async function closeCompletedSession(client, workDir, retainSession = false) {
   if (sidecar === client) sidecar = null;
   activeSource = null;
   outputTokens.clear();
   exportOutputTokens.clear();
   conversationOutputTokens.clear();
   previewTokens.clear();
+  pendingCandidateFinalization = null;
   const warnings = [];
   try {
     await client.dispose();
   } catch (error) {
     warnings.push(`無法完全關閉背景核心：${error.message}`);
   }
-  try {
-    clearSessionCache(app.getPath("userData"), workDir);
-  } catch (error) {
-    warnings.push(`無法刪除本機快取：${error.message}`);
+  let cacheCleared = false;
+  if (!retainSession) {
+    try {
+      clearSessionCache(app.getPath("userData"), workDir);
+      cacheCleared = true;
+    } catch (error) {
+      warnings.push(`無法刪除本機快取：${error.message}`);
+    }
   }
   return {
-    cacheCleared: warnings.length === 0,
+    cacheCleared,
+    cacheRetained: retainSession || !cacheCleared,
+    sessionPath: retainSession ? workDir : null,
     cacheCleanupWarning: warnings.join(" ")
   };
 }
@@ -315,6 +328,84 @@ function cleanCancelledOperation(operation) {
 }
 
 async function registerIpc() {
+  ipcMain.handle("line-native:list-sessions", (event) => {
+    assertTrustedSender(event);
+    return listSessionCaches(
+      app.getPath("userData"),
+      app.getVersion(),
+      SESSION_CACHE_COMPATIBLE_VERSIONS
+    );
+  });
+
+  ipcMain.handle("line-native:open-session", async (event, sessionId) => {
+    assertTrustedSender(event);
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{64}$/.test(sessionId)) {
+      throw new TypeError("Invalid session ID.");
+    }
+    let savedSession;
+    try {
+      savedSession = readSessionCache(
+        app.getPath("userData"),
+        sessionId,
+        app.getVersion(),
+        SESSION_CACHE_COMPATIBLE_VERSIONS
+      );
+    } catch {
+      throw new Error("無法讀取這個 Session；catalog.sqlite 可能已損壞或不完整。");
+    }
+    if (!savedSession) throw new Error("找不到指定的 Session。");
+    if (!savedSession.reusable) {
+      throw new Error(`無法直接載入這個 Session：${savedSession.unavailableReason}。`);
+    }
+    return replaceSidecar(savedSession.sourcePath, true);
+  });
+
+  ipcMain.handle("line-native:delete-session", async (event, sessionId) => {
+    assertTrustedSender(event);
+    if (typeof sessionId !== "string" || !/^[0-9a-f]{64}$/.test(sessionId)) {
+      throw new TypeError("Invalid session ID.");
+    }
+    let savedSession;
+    try {
+      savedSession = readSessionCache(
+        app.getPath("userData"),
+        sessionId,
+        app.getVersion(),
+        SESSION_CACHE_COMPATIBLE_VERSIONS
+      );
+    } catch {
+      throw new Error("無法讀取這個 Session；catalog.sqlite 可能已損壞或不完整。");
+    }
+    if (!savedSession) throw new Error("找不到指定的 Session。");
+    const workDir = savedSession.sessionPath;
+    const activeWorkDir = activeSource
+      ? sessionWorkDir(app.getPath("userData"), activeSource)
+      : null;
+    const deletingActiveSession = activeWorkDir &&
+      path.resolve(activeWorkDir) === path.resolve(workDir);
+    if (deletingActiveSession) {
+      if (activeOperation) {
+        throw new Error("此 Session 目前仍有操作正在執行，請等待完成後再刪除。");
+      }
+      const result = await closeCompletedSession(sidecar, workDir, false);
+      return {
+        deleted: result.cacheCleared,
+        activeSessionClosed: true,
+        sourcePath: savedSession.sourcePath,
+        sessionPath: workDir,
+        warning: result.cacheCleanupWarning
+      };
+    }
+    clearSessionCache(app.getPath("userData"), workDir);
+    return {
+      deleted: true,
+      activeSessionClosed: false,
+      sourcePath: savedSession.sourcePath,
+      sessionPath: workDir,
+      warning: ""
+    };
+  });
+
   ipcMain.handle("line-native:select-source", async (event, kind) => {
     assertTrustedSender(event);
     if (!["directory", "archive", "sqlite"].includes(kind)) {
@@ -388,6 +479,27 @@ async function registerIpc() {
       output,
       workDir
     });
+  });
+
+  ipcMain.handle("line-native:finalize-candidate-session", async (event, retainSession) => {
+    assertTrustedSender(event);
+    if (typeof retainSession !== "boolean") {
+      throw new TypeError("A Session retention choice is required.");
+    }
+    if (!sidecar || !activeSource || !pendingCandidateFinalization) {
+      throw new Error("目前沒有等待處理的分析 Session。");
+    }
+    if (activeOperation) {
+      throw new Error("候選檔仍在建立中，尚不能處理分析 Session。");
+    }
+    const { client, workDir } = pendingCandidateFinalization;
+    if (sidecar !== client ||
+        path.resolve(workDir) !== path.resolve(
+          sessionWorkDir(app.getPath("userData"), activeSource)
+        )) {
+      throw new Error("等待處理的分析 Session 已變更，將保留目前的快取。");
+    }
+    return closeCompletedSession(client, workDir, retainSession);
   });
 
   ipcMain.handle("line-native:cancel-operation", async (event) => {
@@ -530,8 +642,8 @@ async function registerIpc() {
       if (method !== "buildCandidate") return result;
       if (result && result.lineSquareRebuildRequired === true) return result;
       outputTokens.delete(candidateOutputToken);
-      const cacheResult = await closeCompletedSession(client, workDir);
-      return { ...result, ...cacheResult };
+      pendingCandidateFinalization = { client, workDir };
+      return { ...result, sessionFinalizationRequired: true };
     } catch (error) {
       if (candidateOutputToken) outputTokens.delete(candidateOutputToken);
       if (exportOutputToken) exportOutputTokens.delete(exportOutputToken);

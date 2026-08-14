@@ -200,22 +200,56 @@ test("can cancel long-running native work and recover its sidecar", () => {
   assert.match(main, /\.partial/);
 });
 
-test("versions session cache and clears it after a successful candidate build", () => {
+test("versions session cache and asks whether to retain it after a successful candidate build", () => {
   assert.match(main, /prepareSessionCache\(/);
   assert.match(main, /app\.getVersion\(\)/);
   assert.match(sessionCache, /CACHE_VERSION_FILE = "\.line-cheater-cache-version"/);
   assert.match(sessionCache, /previousVersion === version/);
-  assert.match(main, /SESSION_CACHE_COMPATIBLE_VERSIONS = \["0\.1\.23"\]/);
+  assert.match(
+    main,
+    /SESSION_CACHE_COMPATIBLE_VERSIONS = \["0\.1\.23", "0\.1\.24", "0\.1\.25", "0\.1\.26"\]/
+  );
   assert.match(sessionCache, /compatibleVersions\.includes\(previousVersion\)/);
   assert.match(sessionCache, /clearSessionCache\(userDataPath, workDir\)/);
   assert.match(main, /outputFallsInsideSession\(workDir, output\)/);
-  assert.match(main, /const cacheResult = await closeCompletedSession\(client, workDir\)/);
-  assert.match(main, /return \{ \.\.\.result, \.\.\.cacheResult \}/);
+  assert.match(main, /"line-native:finalize-candidate-session"/);
+  assert.match(main, /closeCompletedSession\(client, workDir, retainSession\)/);
+  assert.match(renderer, /要刪除已分析的 Session 嗎/);
+  assert.match(renderer, /bridge\.finalizeCandidateSession\(!deleteSession\)/);
+  assert.match(renderer, /report\.cacheRetained/);
   assert.match(renderer, /function resetAfterCandidateBuild\(\)/);
   assert.match(renderer, /本機快取已清除；下次請重新選擇來源/);
   assert.match(renderer, /setCandidateBuildDisabled\(!provider\)/);
   assert.match(macPackager, /"session-cache\.cjs"/);
   assert.match(windowsPackager, /"session-cache\.cjs"/);
+});
+
+test("lists and directly opens complete analyzed sessions", () => {
+  assert.match(html, /id="saved-sessions-title">已分析的 Session/);
+  assert.match(html, /id="saved-session-list"/);
+  assert.match(html, /id="refresh-sessions"/);
+  assert.match(preload, /listSessions\(\)/);
+  assert.match(preload, /openSession\(sessionId\)/);
+  assert.match(preload, /deleteSession\(sessionId\)/);
+  assert.match(main, /"line-native:list-sessions"/);
+  assert.match(main, /"line-native:open-session"/);
+  assert.match(main, /"line-native:delete-session"/);
+  assert.match(main, /readSessionCache\(/);
+  assert.match(main, /replaceSidecar\(savedSession\.sourcePath, true\)/);
+  assert.match(main, /sidecarArguments\.push\("--reuse-session"\)/);
+  assert.match(sessionCache, /function listSessionCaches\(/);
+  assert.match(sessionCache, /source_fingerprint/);
+  assert.match(sessionCache, /session\.reusable = !session\.unavailableReason/);
+  assert.match(sessionCache, /sessionPath: workDir/);
+  assert.match(renderer, /function renderSavedSessions\(sessions\)/);
+  assert.match(renderer, /`備份：\$\{session\.sourcePath\}`/);
+  assert.match(renderer, /`Session：\$\{session\.sessionPath\}`/);
+  assert.match(renderer, /bridge\.openSession\(sessionId\)/);
+  assert.match(renderer, /bridge\.deleteSession\(button\.dataset\.sessionDelete\)/);
+  assert.match(renderer, /原始 LINE\.imazingapp、已生成的瘦身 \.imazingapp/);
+  assert.match(renderer, /既有 Session 已載入，不需要重新分析備份/);
+  assert.match(renderer, /\["來源路徑", info\.source\.sourcePath\]/);
+  assert.match(styles, /\.saved-session-list\s*\{/);
 });
 
 test("checks packaged apps for newer stable GitHub releases at startup", () => {
@@ -366,6 +400,10 @@ test("supports reversible category-wide actions with locked mutation progress", 
   assert.match(renderer, /取消全部只保留縮圖/);
   assert.match(renderer, /取消刪除分類所有附件/);
   assert.match(renderer, /取消刪除分類所有聊天室/);
+  assert.match(renderer, /所有圖片原圖及縮圖/);
+  assert.match(renderer, /影片、PDF、語音與其他附件/);
+  assert.match(renderer, /所有非空縮圖都會優先保留/);
+  assert.match(renderer, /dataset\.deletingAllAttachments/);
   assert.match(renderer, /\["all", "individual", "group", "community"\]\.includes\(category\)/);
   assert.match(renderer, /runCleanupMutation\(/);
   assert.match(renderer, /bridge\.on\("cleanupMutationProgress"/);
@@ -545,15 +583,20 @@ test("opens cleanup thumbnails in the shared image modal", () => {
   assert.match(styles, /\.cleanup-preview-open\s*\{/);
 });
 
-test("offers keep-thumbnail only for thumbnail-backed image originals", () => {
-  assert.match(renderer, /group\.thumbnailBackedImageCount > 0/);
+test("offers keep-thumbnail for every group with a non-empty thumbnail", () => {
+  assert.match(renderer, /group\.nonemptyThumbnailCount > 0/);
   assert.match(
     renderer,
-    /PDF、影片與無縮圖附件會保留/
+    /所有非空縮圖；只有能安全配對的圖片原檔/
   );
-  assert.doesNotMatch(renderer, /group\.hasOriginal && group\.hasThumbnail/);
+  assert.doesNotMatch(renderer, /group\.thumbnailBackedImageCount > 0/);
   assert.match(renderer, /group\.chatKind === "community"/);
-  assert.match(renderer, /沒有可配對原圖/);
+  assert.match(renderer, /沒有非空縮圖/);
+  assert.match(renderer, /已保留 \$\{group\.nonemptyThumbnailCount\.toLocaleString\(\)\} 個縮圖/);
+  assert.match(renderer, /keepingThumbnails \? "刪除縮圖以外附件" : "刪除所有附件"/);
+  assert.match(renderer, /hasProtectedThumbnails \? "取消刪除其他附件"/);
+  assert.match(renderer, /protectedThumbnailCount/);
+  assert.match(renderer, /分類批次刪除仍啟用/);
 });
 
 test("lists no-attachment chats only in advanced cleanup mode", () => {

@@ -381,6 +381,11 @@ fn detects_same_size_same_mtime_content_replacement() {
         .unwrap();
 
     assert!(
+        catalog
+            .source_metadata_matches_current(&source, SourceKind::Directory)
+            .unwrap()
+    );
+    assert!(
         !catalog
             .source_matches_current(&source, SourceKind::Directory)
             .unwrap()
@@ -1152,6 +1157,18 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
     let group_thumbnail = private_store.join("Message Thumbnails/g-unified/34567890.thumb");
     fs::create_dir_all(group_thumbnail.parent().unwrap()).unwrap();
     fs::write(&group_thumbnail, b"group thumbnail").unwrap();
+    let unpaired_group_thumbnail =
+        private_store.join("Message Thumbnails/g-unified/44567890.thumb");
+    fs::write(&unpaired_group_thumbnail, b"unpaired group thumbnail").unwrap();
+    let connection = Connection::open(private_store.join("Messages/Line.sqlite")).unwrap();
+    connection
+        .execute(
+            "INSERT INTO ZMESSAGE VALUES
+             (23, '44567890', 420, 8, 1, 0, 1, 'R', 'thumbnail only', NULL, NULL)",
+            [],
+        )
+        .unwrap();
+    connection.close().unwrap();
     let community_thumbnail = private_store.join("Message Thumbnails/square-chat/23456789.thumb");
     fs::create_dir_all(community_thumbnail.parent().unwrap()).unwrap();
     fs::write(&community_thumbnail, b"community thumbnail").unwrap();
@@ -1199,6 +1216,8 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
         .into_iter()
         .find(|group| group.chat_id == "g-unified")
         .unwrap();
+    assert_eq!(group.thumbnail_backed_image_count, 1);
+    assert_eq!(group.nonempty_thumbnail_count, 2);
     assert!(group.keeping_thumbnails);
 
     let community = catalog
@@ -1211,7 +1230,33 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
     assert!(community.keeping_thumbnails);
     let all_action_state = catalog.cleanup_category_action_state("all").unwrap();
     assert!(all_action_state.keeping_all_thumbnails);
+    assert_eq!(
+        all_action_state.protected_thumbnail_count,
+        all_action_state.thumbnail_candidate_count
+    );
     assert!(!all_action_state.deleting_all_attachments);
+
+    catalog
+        .apply_cleanup_group_action(&community.key, "keep_thumbnail")
+        .unwrap();
+    let partial_keep_state = catalog.cleanup_category_action_state("all").unwrap();
+    assert!(partial_keep_state.keeping_all_thumbnails);
+    assert!(
+        partial_keep_state.protected_thumbnail_count < partial_keep_state.thumbnail_candidate_count
+    );
+    assert!(
+        !catalog
+            .list_cleanup_groups(1, 24, None, "all", "community", "recent")
+            .unwrap()
+            .items
+            .into_iter()
+            .find(|group| group.chat_id == "square-chat")
+            .unwrap()
+            .keeping_thumbnails
+    );
+    catalog
+        .apply_cleanup_group_action(&community.key, "keep_thumbnail")
+        .unwrap();
 
     let mut clear_thumbnail_progress = Vec::new();
     let overview = catalog
@@ -1232,6 +1277,9 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
             .keeping_all_thumbnails
     );
 
+    catalog
+        .apply_cleanup_category_action("community", "keep_thumbnail", |_| Ok(()))
+        .unwrap();
     let mut delete_progress = Vec::new();
     let overview = catalog
         .apply_cleanup_category_action("community", "delete_all", |progress| {
@@ -1240,15 +1288,66 @@ fn applies_category_actions_to_individual_group_and_community_files_with_progres
         })
         .unwrap();
     assert_eq!(delete_progress.first().unwrap().processed_records, 0);
+    assert_eq!(overview.manual_marked_count, 1);
+    let community_state = catalog.cleanup_category_action_state("community").unwrap();
+    assert!(community_state.keeping_all_thumbnails);
+    assert!(community_state.deleting_all_attachments);
+    assert_eq!(community_state.protected_thumbnail_count, 1);
+    let community_files = catalog
+        .list_cleanup_groups(1, 24, None, "all", "community", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.chat_id == "square-chat")
+        .unwrap();
+    assert_eq!(community_files.marked_count, 1);
+    assert!(community_files.deleting_all_attachments);
+
+    let overview = catalog
+        .apply_cleanup_group_action(&community_files.key, "toggle_all")
+        .unwrap();
+    assert_eq!(overview.manual_marked_count, 1);
+    let community_state = catalog.cleanup_category_action_state("community").unwrap();
+    assert!(community_state.keeping_all_thumbnails);
+    assert!(community_state.deleting_all_attachments);
+    let community_files = catalog
+        .list_cleanup_groups(1, 24, None, "all", "community", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.chat_id == "square-chat")
+        .unwrap();
+    assert!(!community_files.deleting_all_attachments);
+    catalog
+        .apply_cleanup_category_action("community", "clear_keep_thumbnail", |_| Ok(()))
+        .unwrap();
+
+    let mut delete_progress = Vec::new();
+    let overview = catalog
+        .apply_cleanup_category_action("community", "delete_all", |progress| {
+            delete_progress.push(progress);
+            Ok(())
+        })
+        .unwrap();
     assert_eq!(delete_progress.last().unwrap().processed_records, 2);
     assert_eq!(delete_progress.last().unwrap().total_records, 2);
     assert_eq!(overview.manual_marked_count, 2);
-    assert!(
-        catalog
-            .cleanup_category_action_state("community")
-            .unwrap()
-            .deleting_all_attachments
-    );
+    catalog
+        .apply_cleanup_category_action("community", "keep_thumbnail", |_| Ok(()))
+        .unwrap();
+    let community_state = catalog.cleanup_category_action_state("community").unwrap();
+    assert!(community_state.keeping_all_thumbnails);
+    assert!(community_state.deleting_all_attachments);
+    assert_eq!(community_state.marked_attachment_count, 1);
+
+    catalog
+        .apply_cleanup_category_action("community", "clear_keep_thumbnail", |_| Ok(()))
+        .unwrap();
+    let community_state = catalog.cleanup_category_action_state("community").unwrap();
+    assert!(!community_state.keeping_all_thumbnails);
+    assert!(community_state.deleting_all_attachments);
+    assert_eq!(community_state.protected_thumbnail_count, 0);
+    assert_eq!(community_state.marked_attachment_count, 2);
 
     let mut clear_attachment_progress = Vec::new();
     let overview = catalog
@@ -1505,14 +1604,190 @@ fn cleanup_groups_match_web_reference_and_marking_semantics() {
         .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
         .unwrap();
     assert_eq!(overview.marked_count, 0);
+
+    // Keep-thumbnail takes precedence regardless of whether it is enabled before or after
+    // delete-all, and each bulk action remains independently reversible.
+    let overview = catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    assert_eq!(overview.marked_count, 1);
+    let overview = catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
+    assert_eq!(overview.marked_count, 1);
+    let group = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.key == "chat:line:7")
+        .unwrap();
+    assert!(group.keeping_thumbnails);
+    assert!(group.deleting_all_attachments);
+
+    let overview = catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
+    assert_eq!(overview.marked_count, 1);
+    let group = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.key == "chat:line:7")
+        .unwrap();
+    assert!(group.keeping_thumbnails);
+    assert!(!group.deleting_all_attachments);
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
     let overview = catalog
         .apply_cleanup_group_action("chat:line:7", "toggle_all")
         .unwrap();
     assert_eq!(overview.marked_count, 2);
     let overview = catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    assert_eq!(overview.marked_count, 1);
+    let files = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .remove(0)
+        .files;
+    assert!(files[0].marked_for_removal);
+    assert!(!files[1].marked_for_removal);
+    let group = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.key == "chat:line:7")
+        .unwrap();
+    assert!(group.keeping_thumbnails);
+    assert!(group.deleting_all_attachments);
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    let overview = catalog
         .apply_cleanup_group_action("chat:line:7", "toggle_all")
         .unwrap();
     assert_eq!(overview.marked_count, 0);
+}
+
+#[test]
+fn cancelling_one_group_keeps_the_category_delete_rule_for_other_groups() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    add_chat_title_fixtures(&source);
+    let prepared = prepare_source(&source, &temporary.path().join("work")).unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let mut catalog = Catalog::open(&temporary.path().join("work/catalog.sqlite")).unwrap();
+    catalog
+        .scan_source(&source, SourceKind::Directory, |_| {})
+        .unwrap();
+    catalog
+        .index_attachment_contexts(&database, None, None, |_| {})
+        .unwrap();
+
+    catalog
+        .apply_cleanup_category_action("all", "delete_all", |_| Ok(()))
+        .unwrap();
+    let groups = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap();
+    let target = groups
+        .items
+        .iter()
+        .find(|group| group.key == "chat:line:7")
+        .unwrap();
+    let other = groups
+        .items
+        .iter()
+        .find(|group| group.key != target.key)
+        .unwrap();
+    assert!(target.deleting_all_attachments);
+    assert!(other.deleting_all_attachments);
+    let other_key = other.key.clone();
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
+    let groups = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap();
+    assert!(
+        !groups
+            .items
+            .iter()
+            .find(|group| group.key == "chat:line:7")
+            .unwrap()
+            .deleting_all_attachments
+    );
+    assert!(
+        groups
+            .items
+            .iter()
+            .find(|group| group.key == other_key)
+            .unwrap()
+            .deleting_all_attachments
+    );
+    assert!(
+        catalog
+            .cleanup_category_action_state("all")
+            .unwrap()
+            .deleting_all_attachments
+    );
+
+    drop(catalog);
+    let catalog = Catalog::open(&temporary.path().join("work/catalog.sqlite")).unwrap();
+    let persisted_groups = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap();
+    assert!(
+        !persisted_groups
+            .items
+            .iter()
+            .find(|group| group.key == "chat:line:7")
+            .unwrap()
+            .deleting_all_attachments
+    );
+    assert!(
+        persisted_groups
+            .items
+            .iter()
+            .find(|group| group.key == other_key)
+            .unwrap()
+            .deleting_all_attachments
+    );
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
+    assert!(
+        catalog
+            .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+            .unwrap()
+            .items
+            .iter()
+            .find(|group| group.key == "chat:line:7")
+            .unwrap()
+            .deleting_all_attachments
+    );
+
+    catalog
+        .apply_cleanup_category_action("all", "clear_delete_all", |_| Ok(()))
+        .unwrap();
+    assert!(
+        catalog
+            .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+            .unwrap()
+            .items
+            .iter()
+            .all(|group| !group.deleting_all_attachments)
+    );
 }
 
 #[test]
@@ -1576,7 +1851,7 @@ fn lists_chats_without_indexed_attachments_for_advanced_cleanup() {
 }
 
 #[test]
-fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
+fn keep_thumbnail_protects_all_nonempty_thumbnails_without_requiring_a_pair() {
     let temporary = TempDir::new().unwrap();
     let source = make_fixture(temporary.path());
     let private_store = source.join(
@@ -1596,6 +1871,11 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
     )
     .unwrap();
     fs::write(thumbnails.join("62345678.thumb"), b"").unwrap();
+    fs::write(
+        thumbnails.join("72345678.thumb"),
+        b"image thumbnail without original",
+    )
+    .unwrap();
 
     let database_path = private_store.join("Messages/Line.sqlite");
     let connection = Connection::open(&database_path).unwrap();
@@ -1607,7 +1887,8 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
                 (31, '32345678', 320, 7, 1, 0, 2, 'R', 'video no thumbnail', NULL, NULL),
                 (32, '42345678', 330, 7, 1, 0, 1, 'R', 'image no thumbnail', NULL, NULL),
                 (33, '52345678', 340, 7, 1, 0, 2, 'R', 'video thumbnail', NULL, NULL),
-                (34, '62345678', 350, 7, 1, 0, 1, 'R', 'empty thumbnail', NULL, NULL);
+                (34, '62345678', 350, 7, 1, 0, 1, 'R', 'empty thumbnail', NULL, NULL),
+                (35, '72345678', 360, 7, 1, 0, 1, 'R', 'thumbnail without original', NULL, NULL);
             ",
         )
         .unwrap();
@@ -1615,7 +1896,8 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
 
     let prepared = prepare_source(&source, &temporary.path().join("work")).unwrap();
     let database = LineDatabase::open(&prepared.database_path).unwrap();
-    let mut catalog = Catalog::open(&temporary.path().join("work/cleanup-safety.sqlite")).unwrap();
+    let catalog_path = temporary.path().join("work/cleanup-safety.sqlite");
+    let mut catalog = Catalog::open(&catalog_path).unwrap();
     catalog
         .scan_source(&source, SourceKind::Directory, |_| {})
         .unwrap();
@@ -1658,6 +1940,19 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
         .find(|group| group.key == "chat:line:7")
         .unwrap();
     assert_eq!(group.thumbnail_backed_image_count, 1);
+    assert_eq!(group.nonempty_thumbnail_count, 3);
+
+    let standalone_thumbnail = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .iter()
+        .flat_map(|review| &review.files)
+        .find(|file| file.message_id == "72345678")
+        .unwrap()
+        .path
+        .clone();
+    catalog.set_marked(&standalone_thumbnail, true).unwrap();
 
     let overview = catalog
         .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
@@ -1692,6 +1987,59 @@ fn keep_thumbnail_only_marks_images_with_nonempty_matching_thumbnails() {
             .flat_map(|review| &review.files)
             .all(|file| { file.kind != AttachmentKind::Thumbnail || !file.marked_for_removal })
     );
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    let reviews = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap();
+    for file in reviews.items.iter().flat_map(|review| &review.files) {
+        if file.kind == AttachmentKind::Thumbnail && file.bytes > 0 {
+            assert!(
+                !file.marked_for_removal,
+                "{} should be protected",
+                file.path
+            );
+        } else {
+            assert!(file.marked_for_removal, "{} should be deleted", file.path);
+        }
+    }
+
+    drop(catalog);
+    let catalog = Catalog::open(&catalog_path).unwrap();
+    let group = catalog
+        .list_cleanup_groups(1, 24, None, "all", "all", "recent")
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|group| group.key == "chat:line:7")
+        .unwrap();
+    assert!(group.keeping_thumbnails);
+    assert!(group.deleting_all_attachments);
+
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "keep_thumbnail")
+        .unwrap();
+    let reviews = catalog
+        .list_cleanup_reviews("chat:line:7", 1, 24, None, "all", "all", "recent")
+        .unwrap();
+    assert!(
+        reviews
+            .items
+            .iter()
+            .flat_map(|review| &review.files)
+            .all(|file| file.marked_for_removal)
+    );
+    catalog
+        .apply_cleanup_group_action("chat:line:7", "toggle_all")
+        .unwrap();
 
     let overview = catalog.clear_all_user_removal_plans().unwrap();
     assert_eq!(overview.marked_count, 0);

@@ -75,21 +75,9 @@ const THUMBNAIL_BACKED_IMAGE_EXPR: &str = "
           AND thumbnail.chat_hint = f.chat_hint
     )
 ";
-const IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR: &str = "
+const NONEMPTY_THUMBNAIL_EXPR: &str = "
     f.attachment_kind = 'thumbnail'
-    AND f.reference_status = 'referenced'
-    AND f.message_content_type IN (1, 16, 112)
     AND f.bytes > 0
-    AND f.message_id <> ''
-    AND EXISTS (
-        SELECT 1
-        FROM files original
-        WHERE original.attachment_kind = 'original'
-          AND original.reference_status = 'referenced'
-          AND original.message_content_type IN (1, 16, 112)
-          AND original.message_id = f.message_id
-          AND original.chat_hint = f.chat_hint
-    )
 ";
 const CHAT_REMOVAL_ATTACHMENT_PREDICATE: &str = "
     f.attachment_kind IS NOT NULL
@@ -281,6 +269,23 @@ impl Catalog {
                 marked_at INTEGER NOT NULL,
                 reason TEXT NOT NULL DEFAULT 'manual'
             );
+            CREATE TABLE IF NOT EXISTS cleanup_bulk_action (
+                scope TEXT NOT NULL CHECK(scope IN ('category', 'group')),
+                scope_key TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action = 'delete_all'),
+                marked_at INTEGER NOT NULL,
+                PRIMARY KEY(scope, scope_key, action)
+            );
+            CREATE TABLE IF NOT EXISTS cleanup_delete_all_group_exclusion (
+                scope_key TEXT NOT NULL,
+                group_key TEXT NOT NULL,
+                marked_at INTEGER NOT NULL,
+                PRIMARY KEY(scope_key, group_key)
+            );
+            CREATE TABLE IF NOT EXISTS cleanup_keep_thumbnail_group (
+                group_key TEXT PRIMARY KEY,
+                marked_at INTEGER NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS chat_removal_plan (
                 source TEXT NOT NULL CHECK(source IN ('line', 'square')),
                 chat_pk INTEGER NOT NULL,
@@ -432,7 +437,13 @@ impl Catalog {
         self.meta("source_fingerprint")
     }
 
-    pub fn source_matches_current(&self, source: &Path, kind: SourceKind) -> Result<bool> {
+    pub fn analysis_is_complete(&self) -> Result<bool> {
+        Ok(self.meta("scan_status")?.as_deref() == Some("complete")
+            && self.meta("context_status")?.as_deref() == Some("complete")
+            && self.meta("context_index_version")?.as_deref() == Some(CONTEXT_INDEX_VERSION))
+    }
+
+    pub fn source_metadata_matches_current(&self, source: &Path, kind: SourceKind) -> Result<bool> {
         let Some(bound) = self.source_path()? else {
             return Ok(false);
         };
@@ -447,11 +458,19 @@ impl Catalog {
         if stored_fingerprint != source_metadata_fingerprint(&current, kind)? {
             return Ok(false);
         }
+        Ok(true)
+    }
+
+    pub fn source_matches_current(&self, source: &Path, kind: SourceKind) -> Result<bool> {
+        if !self.source_metadata_matches_current(source, kind)? {
+            return Ok(false);
+        }
+        let current = source.canonicalize()?;
         if !self.content_matches_catalog(&current, kind)? {
             return Ok(false);
         }
         if kind == SourceKind::ImazingArchive {
-            return Ok(stored_fingerprint == source_metadata_fingerprint(&current, kind)?);
+            return self.source_metadata_matches_current(&current, kind);
         }
         Ok(true)
     }
@@ -837,6 +856,26 @@ impl Catalog {
         if !exists {
             bail!("attachment path is not present in this catalog");
         }
+        self.connection.execute(
+            &format!(
+                "DELETE FROM cleanup_bulk_action
+                 WHERE action = 'delete_all'
+                   AND scope = 'group'
+                   AND scope_key = (
+                       SELECT {CLEANUP_GROUP_EXPR} FROM files f WHERE f.path = ?1
+                   )"
+            ),
+            [path],
+        )?;
+        self.connection.execute(
+            &format!(
+                "DELETE FROM cleanup_keep_thumbnail_group
+                 WHERE group_key = (
+                     SELECT {CLEANUP_GROUP_EXPR} FROM files f WHERE f.path = ?1
+                 )"
+            ),
+            [path],
+        )?;
         let bytes: i64 = self.connection.query_row(
             "SELECT bytes FROM files WHERE path = ?1",
             [path],
@@ -904,6 +943,9 @@ impl Catalog {
             total,
             &mut on_progress,
         )?;
+        transaction.execute("DELETE FROM cleanup_bulk_action", [])?;
+        transaction.execute("DELETE FROM cleanup_delete_all_group_exclusion", [])?;
+        transaction.execute("DELETE FROM cleanup_keep_thumbnail_group", [])?;
         transaction.commit()?;
         self.record_cleanup_activity(
             "clear_manual_plan",
@@ -2996,6 +3038,9 @@ impl Catalog {
     pub fn clear_all_removal_plans(&self) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute("DELETE FROM removal_plan", [])?;
+        transaction.execute("DELETE FROM cleanup_bulk_action", [])?;
+        transaction.execute("DELETE FROM cleanup_delete_all_group_exclusion", [])?;
+        transaction.execute("DELETE FROM cleanup_keep_thumbnail_group", [])?;
         transaction.execute("DELETE FROM chat_removal_files", [])?;
         transaction.execute("DELETE FROM chat_removal_plan", [])?;
         transaction.execute("DELETE FROM orphan_message_removal_plan", [])?;
@@ -3551,7 +3596,9 @@ impl Catalog {
                 has_original: false,
                 has_thumbnail: false,
                 thumbnail_backed_image_count: 0,
+                nonempty_thumbnail_count: 0,
                 keeping_thumbnails: false,
+                deleting_all_attachments: false,
                 latest_timestamp: chat.last_updated,
                 planned_for_chat_removal: chat.planned_for_removal,
             })
@@ -3587,8 +3634,8 @@ impl Catalog {
                        {CLEANUP_CATEGORY_EXPR} AS category,
                        CASE WHEN {THUMBNAIL_BACKED_IMAGE_EXPR} THEN 1 ELSE 0 END
                            AS thumbnail_backed_image,
-                       CASE WHEN {IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR} THEN 1 ELSE 0 END
-                           AS image_thumbnail_with_original
+                       CASE WHEN {NONEMPTY_THUMBNAIL_EXPR} THEN 1 ELSE 0 END
+                           AS nonempty_thumbnail
                 FROM files f
                 LEFT JOIN all_removal_plan p ON p.path = f.path
                 WHERE f.attachment_kind IS NOT NULL
@@ -3624,13 +3671,31 @@ impl Catalog {
                        MAX(CASE WHEN attachment_kind = 'original' THEN 1 ELSE 0 END) AS has_original,
                        MAX(CASE WHEN attachment_kind = 'thumbnail' THEN 1 ELSE 0 END) AS has_thumbnail,
                        SUM(thumbnail_backed_image) AS thumbnail_backed_image_count,
-                       CASE
-                           WHEN SUM(thumbnail_backed_image) > 0
-                            AND SUM(CASE WHEN thumbnail_backed_image AND marked THEN 1 ELSE 0 END)
-                                = SUM(thumbnail_backed_image)
-                            AND SUM(CASE WHEN image_thumbnail_with_original AND marked THEN 1 ELSE 0 END) = 0
+                       SUM(nonempty_thumbnail) AS nonempty_thumbnail_count,
+                       MAX(CASE WHEN EXISTS (
+                           SELECT 1 FROM cleanup_keep_thumbnail_group keep_action
+                           WHERE keep_action.group_key = base.group_key
+                       ) THEN 1 ELSE 0 END) AS keeping_thumbnails,
+                       MAX(CASE
+                           WHEN EXISTS (
+                               SELECT 1 FROM cleanup_bulk_action bulk_action
+                               WHERE bulk_action.action = 'delete_all'
+                                 AND (
+                                     (bulk_action.scope = 'group'
+                                     AND bulk_action.scope_key = base.group_key)
+                                     OR
+                                     (bulk_action.scope = 'category'
+                                      AND bulk_action.scope_key IN ('all', base.category)
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM cleanup_delete_all_group_exclusion exclusion
+                                          WHERE exclusion.scope_key = bulk_action.scope_key
+                                            AND exclusion.group_key = base.group_key
+                                      ))
+                                 )
+                           )
                            THEN 1 ELSE 0
-                       END AS keeping_thumbnails,
+                       END) AS deleting_all_attachments,
                        COALESCE(MAX(message_timestamp), 0) AS latest_timestamp,
                        MAX(CASE
                            WHEN EXISTS (
@@ -3659,8 +3724,10 @@ impl Catalog {
             )
             SELECT group_key, chat_source, chat_pk, chat_id, chat_title, chat_kind, reference_status,
                    file_count, total_bytes, marked_count, has_original,
-                   has_thumbnail, thumbnail_backed_image_count, keeping_thumbnails,
-                   latest_timestamp, planned_for_chat_removal, COUNT(*) OVER()
+                   has_thumbnail, thumbnail_backed_image_count, nonempty_thumbnail_count,
+                   keeping_thumbnails,
+                   deleting_all_attachments, latest_timestamp,
+                   planned_for_chat_removal, COUNT(*) OVER()
             FROM grouped
             ORDER BY
                 CASE WHEN ?4 = 'size' THEN total_bytes END DESC,
@@ -3902,26 +3969,49 @@ impl Catalog {
         let predicate = format!("f.attachment_kind IS NOT NULL AND {CLEANUP_GROUP_EXPR} = ?1");
         let (
             total,
-            marked,
-            thumbnail_backed_images,
-            marked_thumbnail_backed_images,
-            marked_image_thumbnails,
+            nonempty_thumbnails,
+            keeping_thumbnails,
+            deleting_all_attachments,
+            group_category,
+            category_delete_rule_active,
         ) = self.connection.query_row(
             &format!(
                 "
                     SELECT COUNT(*),
-                           SUM(CASE WHEN p.path IS NOT NULL THEN 1 ELSE 0 END),
-                           SUM(CASE WHEN {THUMBNAIL_BACKED_IMAGE_EXPR} THEN 1 ELSE 0 END),
-                           SUM(CASE
-                               WHEN ({THUMBNAIL_BACKED_IMAGE_EXPR}) AND p.path IS NOT NULL
-                               THEN 1 ELSE 0
-                           END),
-                           SUM(CASE
-                               WHEN ({IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR}) AND p.path IS NOT NULL
-                               THEN 1 ELSE 0
-                           END)
+                           SUM(CASE WHEN {NONEMPTY_THUMBNAIL_EXPR} THEN 1 ELSE 0 END),
+                           EXISTS (
+                               SELECT 1 FROM cleanup_keep_thumbnail_group keep_action
+                               WHERE keep_action.group_key = ?1
+                           ),
+                           EXISTS (
+                               SELECT 1 FROM cleanup_bulk_action bulk_action
+                               WHERE bulk_action.action = 'delete_all'
+                                 AND (
+                                     (bulk_action.scope = 'group'
+                                     AND bulk_action.scope_key = ?1)
+                                     OR
+                                     (bulk_action.scope = 'category'
+                                      AND bulk_action.scope_key IN (
+                                          'all', ({CLEANUP_CATEGORY_EXPR})
+                                      )
+                                      AND NOT EXISTS (
+                                          SELECT 1
+                                          FROM cleanup_delete_all_group_exclusion exclusion
+                                          WHERE exclusion.scope_key = bulk_action.scope_key
+                                            AND exclusion.group_key = ?1
+                                      ))
+                                 )
+                           ),
+                           MAX({CLEANUP_CATEGORY_EXPR}),
+                           EXISTS (
+                               SELECT 1 FROM cleanup_bulk_action category_action
+                               WHERE category_action.scope = 'category'
+                                 AND category_action.action = 'delete_all'
+                                 AND category_action.scope_key IN (
+                                     'all', ({CLEANUP_CATEGORY_EXPR})
+                                 )
+                           )
                     FROM files f
-                    LEFT JOIN all_removal_plan p ON p.path = f.path
                     WHERE {predicate}
                     "
             ),
@@ -3930,9 +4020,10 @@ impl Catalog {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(2)? != 0,
+                    row.get::<_, i64>(3)? != 0,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)? != 0,
                 ))
             },
         )?;
@@ -3942,29 +4033,101 @@ impl Catalog {
         let transaction = self.connection.unchecked_transaction()?;
         let mut operations = Vec::<(String, bool)>::new();
         if action == "toggle_all" {
-            if marked == total {
-                operations.push((predicate.clone(), false));
+            if deleting_all_attachments {
+                transaction.execute(
+                    "DELETE FROM cleanup_bulk_action
+                     WHERE action = 'delete_all'
+                       AND scope = 'group'
+                       AND scope_key = ?1",
+                    [group_key],
+                )?;
+                transaction.execute(
+                    "INSERT INTO cleanup_delete_all_group_exclusion(
+                         scope_key, group_key, marked_at
+                     )
+                     SELECT scope_key, ?1, ?3
+                     FROM cleanup_bulk_action
+                     WHERE scope = 'category'
+                       AND action = 'delete_all'
+                       AND scope_key IN ('all', ?2)
+                     ON CONFLICT(scope_key, group_key) DO UPDATE SET
+                         marked_at = excluded.marked_at",
+                    params![group_key, group_category, unix_seconds()],
+                )?;
+                operations.push((format!("{predicate} AND direct.reason = 'manual'"), false));
+                if keeping_thumbnails {
+                    operations.push((
+                        format!("{predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR})"),
+                        true,
+                    ));
+                    operations.push((
+                        format!("{predicate} AND ({NONEMPTY_THUMBNAIL_EXPR})"),
+                        false,
+                    ));
+                }
             } else {
-                operations.push((predicate.clone(), true));
+                if category_delete_rule_active {
+                    transaction.execute(
+                        "DELETE FROM cleanup_delete_all_group_exclusion
+                         WHERE group_key = ?1
+                           AND scope_key IN ('all', ?2)",
+                        params![group_key, group_category],
+                    )?;
+                } else {
+                    transaction.execute(
+                        "INSERT INTO cleanup_bulk_action(scope, scope_key, action, marked_at)
+                         VALUES ('group', ?1, 'delete_all', ?2)
+                         ON CONFLICT(scope, scope_key, action) DO UPDATE SET
+                             marked_at = excluded.marked_at",
+                        params![group_key, unix_seconds()],
+                    )?;
+                }
+                if keeping_thumbnails {
+                    operations.push((
+                        format!("{predicate} AND NOT ({NONEMPTY_THUMBNAIL_EXPR})"),
+                        true,
+                    ));
+                    operations.push((
+                        format!("{predicate} AND ({NONEMPTY_THUMBNAIL_EXPR})"),
+                        false,
+                    ));
+                } else {
+                    operations.push((predicate.clone(), true));
+                }
             }
         } else {
-            if thumbnail_backed_images == 0 {
-                bail!("cleanup group does not contain image originals with matching thumbnails");
+            if !keeping_thumbnails && nonempty_thumbnails == 0 {
+                bail!("cleanup group does not contain non-empty thumbnails");
             }
-            let keeping_thumbnails = marked_thumbnail_backed_images == thumbnail_backed_images
-                && marked_image_thumbnails == 0;
             if keeping_thumbnails {
-                operations.push((
-                    format!("{predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR})"),
-                    false,
-                ));
+                transaction.execute(
+                    "DELETE FROM cleanup_keep_thumbnail_group WHERE group_key = ?1",
+                    [group_key],
+                )?;
+                if deleting_all_attachments {
+                    operations.push((format!("{predicate} AND ({NONEMPTY_THUMBNAIL_EXPR})"), true));
+                } else {
+                    operations.push((
+                        format!(
+                            "{predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR}) \
+                             AND direct.reason = 'manual'"
+                        ),
+                        false,
+                    ));
+                }
             } else {
+                transaction.execute(
+                    "INSERT INTO cleanup_keep_thumbnail_group(group_key, marked_at)
+                     VALUES (?1, ?2)
+                     ON CONFLICT(group_key) DO UPDATE SET marked_at = excluded.marked_at",
+                    params![group_key, unix_seconds()],
+                )?;
                 operations.push((
                     format!("{predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR})"),
                     true,
                 ));
                 operations.push((
-                    format!("{predicate} AND ({IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR})"),
+                    format!("{predicate} AND ({NONEMPTY_THUMBNAIL_EXPR})"),
                     false,
                 ));
             }
@@ -4030,53 +4193,172 @@ impl Catalog {
         {
             bail!("keep-thumbnail category action requires a chat-backed category");
         }
-
         let category_predicate = if category == "all" {
             "f.attachment_kind IS NOT NULL AND ?1 = 'all'".to_string()
         } else {
             format!("f.attachment_kind IS NOT NULL AND ({CLEANUP_CATEGORY_EXPR}) = ?1")
         };
-        let operations = if matches!(action, "keep_thumbnail" | "clear_keep_thumbnail") {
-            let keep_thumbnail_predicate = format!(
-                "{category_predicate}
-                 AND NOT EXISTS (
-                     SELECT 1 FROM chat_removal_plan planned_chat
-                     WHERE planned_chat.source = f.context_source
-                       AND planned_chat.chat_pk = f.message_chat_pk
-                 )"
-            );
-            if action == "keep_thumbnail" {
-                vec![
-                    (
-                        format!("{keep_thumbnail_predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR})"),
-                        true,
+        let transaction = self.connection.unchecked_transaction()?;
+        let keep_thumbnail_predicate = format!(
+            "{category_predicate}
+             AND NOT EXISTS (
+                 SELECT 1 FROM chat_removal_plan planned_chat
+                 WHERE planned_chat.source = f.context_source
+                   AND planned_chat.chat_pk = f.message_chat_pk
+             )"
+        );
+        match action {
+            "keep_thumbnail" => {
+                transaction.execute(
+                    &format!(
+                        "INSERT INTO cleanup_keep_thumbnail_group(group_key, marked_at)
+                         SELECT DISTINCT ({CLEANUP_GROUP_EXPR}), ?2
+                         FROM files f
+                         WHERE {keep_thumbnail_predicate}
+                           AND ({NONEMPTY_THUMBNAIL_EXPR})
+                         ON CONFLICT(group_key) DO UPDATE SET marked_at = excluded.marked_at"
                     ),
-                    (
-                        format!(
-                            "{keep_thumbnail_predicate} AND ({IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR})"
-                        ),
-                        false,
+                    params![category, unix_seconds()],
+                )?;
+            }
+            "clear_keep_thumbnail" => {
+                transaction.execute(
+                    &format!(
+                        "DELETE FROM cleanup_keep_thumbnail_group
+                         WHERE group_key IN (
+                             SELECT DISTINCT ({CLEANUP_GROUP_EXPR})
+                             FROM files f
+                             WHERE {category_predicate}
+                         )"
                     ),
-                ]
-            } else {
-                vec![(
+                    [category],
+                )?;
+            }
+            "delete_all" => {
+                transaction.execute(
+                    "INSERT INTO cleanup_bulk_action(scope, scope_key, action, marked_at)
+                     VALUES ('category', ?1, 'delete_all', ?2)
+                     ON CONFLICT(scope, scope_key, action) DO UPDATE SET
+                         marked_at = excluded.marked_at",
+                    params![category, unix_seconds()],
+                )?;
+                transaction.execute(
+                    "DELETE FROM cleanup_delete_all_group_exclusion
+                     WHERE scope_key = ?1",
+                    [category],
+                )?;
+            }
+            "clear_delete_all" => {
+                transaction.execute(
+                    "DELETE FROM cleanup_bulk_action
+                     WHERE scope = 'category'
+                       AND action = 'delete_all'
+                       AND (scope_key = ?1 OR (?1 <> 'all' AND scope_key = 'all'))",
+                    [category],
+                )?;
+                transaction.execute(
+                    "DELETE FROM cleanup_delete_all_group_exclusion
+                     WHERE scope_key = ?1 OR (?1 <> 'all' AND scope_key = 'all')",
+                    [category],
+                )?;
+            }
+            _ => unreachable!(),
+        }
+        let keep_active_expr = format!(
+            "EXISTS (
+                 SELECT 1 FROM cleanup_keep_thumbnail_group keep_action
+                 WHERE keep_action.group_key = ({CLEANUP_GROUP_EXPR})
+             )"
+        );
+        let delete_all_active_expr = format!(
+            "EXISTS (
+                 SELECT 1 FROM cleanup_bulk_action delete_action
+                 WHERE delete_action.action = 'delete_all'
+                   AND (
+                       (delete_action.scope = 'group'
+                        AND delete_action.scope_key = ({CLEANUP_GROUP_EXPR}))
+                       OR
+                       (delete_action.scope = 'category'
+                        AND delete_action.scope_key IN ('all', ({CLEANUP_CATEGORY_EXPR}))
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM cleanup_delete_all_group_exclusion exclusion
+                            WHERE exclusion.scope_key = delete_action.scope_key
+                              AND exclusion.group_key = ({CLEANUP_GROUP_EXPR})
+                        ))
+                   )
+             )"
+        );
+        let operations = match action {
+            "keep_thumbnail" => vec![
+                (
+                    format!("{keep_thumbnail_predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR})"),
+                    true,
+                ),
+                (
+                    format!("{keep_thumbnail_predicate} AND ({NONEMPTY_THUMBNAIL_EXPR})"),
+                    false,
+                ),
+            ],
+            "clear_keep_thumbnail" => vec![
+                (
                     format!(
-                        "{keep_thumbnail_predicate}
-                         AND ({THUMBNAIL_BACKED_IMAGE_EXPR})
-                         AND direct.reason = 'manual'"
+                        "{keep_thumbnail_predicate} AND ({NONEMPTY_THUMBNAIL_EXPR}) \
+                         AND ({delete_all_active_expr})"
+                    ),
+                    true,
+                ),
+                (
+                    format!(
+                        "{keep_thumbnail_predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR}) \
+                         AND direct.reason = 'manual' \
+                         AND NOT ({delete_all_active_expr})"
                     ),
                     false,
-                )]
-            }
-        } else if action == "clear_delete_all" {
-            vec![(
-                format!("{category_predicate} AND direct.reason = 'manual'"),
-                false,
-            )]
-        } else {
-            vec![(category_predicate, true)]
+                ),
+            ],
+            "delete_all" => vec![
+                (
+                    format!(
+                        "{category_predicate} \
+                         AND NOT (({NONEMPTY_THUMBNAIL_EXPR}) AND ({keep_active_expr}))"
+                    ),
+                    true,
+                ),
+                (
+                    format!(
+                        "{category_predicate} AND ({NONEMPTY_THUMBNAIL_EXPR}) \
+                         AND ({keep_active_expr})"
+                    ),
+                    false,
+                ),
+            ],
+            "clear_delete_all" => vec![
+                (
+                    format!(
+                        "{category_predicate} AND direct.reason = 'manual' \
+                         AND NOT ({delete_all_active_expr}) \
+                         AND NOT (({THUMBNAIL_BACKED_IMAGE_EXPR}) AND ({keep_active_expr}))"
+                    ),
+                    false,
+                ),
+                (
+                    format!(
+                        "{keep_thumbnail_predicate} AND ({THUMBNAIL_BACKED_IMAGE_EXPR}) \
+                         AND ({keep_active_expr})"
+                    ),
+                    true,
+                ),
+                (
+                    format!(
+                        "{keep_thumbnail_predicate} AND ({NONEMPTY_THUMBNAIL_EXPR}) \
+                         AND ({keep_active_expr})"
+                    ),
+                    false,
+                ),
+            ],
+            _ => unreachable!(),
         };
-        let transaction = self.connection.unchecked_transaction()?;
         let total_records = operations.iter().try_fold(0_u64, |total, (filter, mark)| {
             Ok::<_, anyhow::Error>(total.saturating_add(direct_plan_change_count(
                 &transaction,
@@ -4127,19 +4409,15 @@ impl Catalog {
         let (
             attachment_count,
             marked_attachment_count,
-            manual_marked_attachment_count,
             thumbnail_candidate_count,
-            marked_thumbnail_candidate_count,
-            manual_thumbnail_candidate_count,
-            marked_image_thumbnail_count,
-        ): (i64, i64, i64, i64, i64, i64, i64) = if chat_backed {
+            protected_thumbnail_candidate_count,
+        ): (i64, i64, i64, i64) = if chat_backed {
             let sql = format!(
                 "
                 SELECT COUNT(*),
                        COALESCE(SUM(CASE WHEN direct.path IS NOT NULL THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN direct.reason = 'manual' THEN 1 ELSE 0 END), 0),
                        COALESCE(SUM(CASE
-                           WHEN ({THUMBNAIL_BACKED_IMAGE_EXPR})
+                           WHEN ({NONEMPTY_THUMBNAIL_EXPR})
                             AND NOT EXISTS (
                                 SELECT 1 FROM chat_removal_plan planned_chat
                                 WHERE planned_chat.source = f.context_source
@@ -4147,31 +4425,16 @@ impl Catalog {
                             )
                            THEN 1 ELSE 0 END), 0),
                        COALESCE(SUM(CASE
-                           WHEN ({THUMBNAIL_BACKED_IMAGE_EXPR})
+                           WHEN ({NONEMPTY_THUMBNAIL_EXPR})
                             AND NOT EXISTS (
                                 SELECT 1 FROM chat_removal_plan planned_chat
                                 WHERE planned_chat.source = f.context_source
                                   AND planned_chat.chat_pk = f.message_chat_pk
                             )
-                            AND direct.path IS NOT NULL
-                           THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(CASE
-                           WHEN ({THUMBNAIL_BACKED_IMAGE_EXPR})
-                            AND NOT EXISTS (
-                                SELECT 1 FROM chat_removal_plan planned_chat
-                                WHERE planned_chat.source = f.context_source
-                                  AND planned_chat.chat_pk = f.message_chat_pk
+                            AND EXISTS (
+                                SELECT 1 FROM cleanup_keep_thumbnail_group keep_action
+                                WHERE keep_action.group_key = ({CLEANUP_GROUP_EXPR})
                             )
-                            AND direct.reason = 'manual'
-                           THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(CASE
-                           WHEN ({IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR})
-                            AND NOT EXISTS (
-                                SELECT 1 FROM chat_removal_plan planned_chat
-                                WHERE planned_chat.source = f.context_source
-                                  AND planned_chat.chat_pk = f.message_chat_pk
-                            )
-                            AND direct.path IS NOT NULL
                            THEN 1 ELSE 0 END), 0)
                 FROM files f
                 LEFT JOIN removal_plan direct ON direct.path = f.path
@@ -4179,31 +4442,22 @@ impl Catalog {
                 "
             );
             self.connection.query_row(&sql, [category], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?
         } else {
             let sql = format!(
                 "
                 SELECT COUNT(*),
-                       COALESCE(SUM(CASE WHEN direct.path IS NOT NULL THEN 1 ELSE 0 END), 0),
-                       COALESCE(SUM(CASE WHEN direct.reason = 'manual' THEN 1 ELSE 0 END), 0)
+                       COALESCE(SUM(CASE WHEN direct.path IS NOT NULL THEN 1 ELSE 0 END), 0)
                 FROM files f
                 LEFT JOIN removal_plan direct ON direct.path = f.path
                 WHERE {category_predicate}
                 "
             );
-            let values: (i64, i64, i64) = self.connection.query_row(&sql, [category], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?;
-            (values.0, values.1, values.2, 0, 0, 0, 0)
+            let values: (i64, i64) = self
+                .connection
+                .query_row(&sql, [category], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            (values.0, values.1, 0, 0)
         };
 
         let (chat_count, planned_chat_count): (i64, i64) = if chat_backed {
@@ -4232,27 +4486,30 @@ impl Catalog {
 
         let attachment_count = attachment_count.max(0) as u64;
         let marked_attachment_count = marked_attachment_count.max(0) as u64;
-        let manual_marked_attachment_count = manual_marked_attachment_count.max(0) as u64;
         let thumbnail_candidate_count = thumbnail_candidate_count.max(0) as u64;
-        let marked_thumbnail_candidate_count = marked_thumbnail_candidate_count.max(0) as u64;
-        let manual_thumbnail_candidate_count = manual_thumbnail_candidate_count.max(0) as u64;
-        let marked_image_thumbnail_count = marked_image_thumbnail_count.max(0) as u64;
+        let protected_thumbnail_candidate_count = protected_thumbnail_candidate_count.max(0) as u64;
         let chat_count = chat_count.max(0) as u64;
         let planned_chat_count = planned_chat_count.max(0) as u64;
+        let deleting_all_attachments: bool = self.connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM cleanup_bulk_action
+                 WHERE scope = 'category'
+                   AND action = 'delete_all'
+                   AND (scope_key = ?1 OR (?1 <> 'all' AND scope_key = 'all'))
+             )",
+            [category],
+            |row| row.get(0),
+        )?;
         Ok(CleanupCategoryActionState {
             category: category.to_string(),
             attachment_count,
             marked_attachment_count,
             thumbnail_candidate_count,
+            protected_thumbnail_count: protected_thumbnail_candidate_count,
             chat_count,
             planned_chat_count,
-            keeping_all_thumbnails: thumbnail_candidate_count > 0
-                && marked_thumbnail_candidate_count == thumbnail_candidate_count
-                && manual_thumbnail_candidate_count > 0
-                && marked_image_thumbnail_count == 0,
-            deleting_all_attachments: attachment_count > 0
-                && marked_attachment_count == attachment_count
-                && manual_marked_attachment_count > 0,
+            keeping_all_thumbnails: protected_thumbnail_candidate_count > 0,
+            deleting_all_attachments: attachment_count > 0 && deleting_all_attachments,
             deleting_all_chats: chat_count > 0 && planned_chat_count == chat_count,
         })
     }
@@ -4608,18 +4865,34 @@ impl Catalog {
                    MAX(CASE WHEN f.attachment_kind = 'thumbnail' THEN 1 ELSE 0 END) AS has_thumbnail,
                    SUM(CASE WHEN {THUMBNAIL_BACKED_IMAGE_EXPR} THEN 1 ELSE 0 END)
                        AS thumbnail_backed_image_count,
-                   CASE
-                       WHEN SUM(CASE WHEN {THUMBNAIL_BACKED_IMAGE_EXPR} THEN 1 ELSE 0 END) > 0
-                        AND SUM(CASE
-                            WHEN ({THUMBNAIL_BACKED_IMAGE_EXPR}) AND p.path IS NOT NULL
-                            THEN 1 ELSE 0
-                        END) = SUM(CASE WHEN {THUMBNAIL_BACKED_IMAGE_EXPR} THEN 1 ELSE 0 END)
-                        AND SUM(CASE
-                            WHEN ({IMAGE_THUMBNAIL_WITH_ORIGINAL_EXPR}) AND p.path IS NOT NULL
-                            THEN 1 ELSE 0
-                        END) = 0
+                   SUM(CASE WHEN {NONEMPTY_THUMBNAIL_EXPR} THEN 1 ELSE 0 END)
+                       AS nonempty_thumbnail_count,
+                   EXISTS (
+                       SELECT 1 FROM cleanup_keep_thumbnail_group keep_action
+                       WHERE keep_action.group_key = ?1
+                   ) AS keeping_thumbnails,
+                   MAX(CASE
+                       WHEN EXISTS (
+                           SELECT 1 FROM cleanup_bulk_action bulk_action
+                           WHERE bulk_action.action = 'delete_all'
+                             AND (
+                                 (bulk_action.scope = 'group'
+                                  AND bulk_action.scope_key = ?1)
+                                 OR
+                                 (bulk_action.scope = 'category'
+                                  AND bulk_action.scope_key IN (
+                                      'all', ({CLEANUP_CATEGORY_EXPR})
+                                  )
+                                  AND NOT EXISTS (
+                                      SELECT 1
+                                      FROM cleanup_delete_all_group_exclusion exclusion
+                                      WHERE exclusion.scope_key = bulk_action.scope_key
+                                        AND exclusion.group_key = ?1
+                                  ))
+                             )
+                       )
                        THEN 1 ELSE 0
-                   END AS keeping_thumbnails,
+                   END) AS deleting_all_attachments,
                    COALESCE(MAX(f.message_timestamp), 0) AS latest_timestamp,
                    MAX(CASE
                        WHEN EXISTS (
@@ -5043,11 +5316,13 @@ fn cleanup_group_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(CleanupG
             has_original: row.get::<_, i64>(10)? != 0,
             has_thumbnail: row.get::<_, i64>(11)? != 0,
             thumbnail_backed_image_count: row.get::<_, i64>(12)?.max(0) as u64,
-            keeping_thumbnails: row.get::<_, i64>(13)? != 0,
-            latest_timestamp: row.get::<_, i64>(14)?,
-            planned_for_chat_removal: row.get::<_, i64>(15)? != 0,
+            nonempty_thumbnail_count: row.get::<_, i64>(13)?.max(0) as u64,
+            keeping_thumbnails: row.get::<_, i64>(14)? != 0,
+            deleting_all_attachments: row.get::<_, i64>(15)? != 0,
+            latest_timestamp: row.get::<_, i64>(16)?,
+            planned_for_chat_removal: row.get::<_, i64>(17)? != 0,
         },
-        row.get::<_, i64>(16)?.max(0) as u64,
+        row.get::<_, i64>(18)?.max(0) as u64,
     ))
 }
 

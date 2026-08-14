@@ -52,6 +52,23 @@ impl NativeSession {
         work_dir: &Path,
         output: &mut W,
     ) -> Result<Self> {
+        Self::open_reporting_inner(source, work_dir, output, false)
+    }
+
+    pub fn open_reporting_reusing_catalog<W: Write>(
+        source: &Path,
+        work_dir: &Path,
+        output: &mut W,
+    ) -> Result<Self> {
+        Self::open_reporting_inner(source, work_dir, output, true)
+    }
+
+    fn open_reporting_inner<W: Write>(
+        source: &Path,
+        work_dir: &Path,
+        output: &mut W,
+        reuse_catalog: bool,
+    ) -> Result<Self> {
         let prepared = prepare_source_reporting(source, work_dir, |progress| {
             let _ = write_json_line(
                 output,
@@ -76,6 +93,10 @@ impl NativeSession {
             .map(UnifiedGroupDatabase::open)
             .transpose()?;
         let catalog = Catalog::open(&work_dir.join("catalog.sqlite"))?;
+        let catalog_source_verified = reuse_catalog
+            && catalog.analysis_is_complete()?
+            && catalog
+                .source_metadata_matches_current(&prepared.original_path, prepared.report.kind)?;
         let fts5_index = Fts5MessageIndex::open(&work_dir.join("search.sqlite")).ok();
         Ok(Self {
             prepared,
@@ -85,7 +106,7 @@ impl NativeSession {
             catalog,
             fts5_index,
             quick_check: None,
-            catalog_source_verified: false,
+            catalog_source_verified,
         })
     }
 
@@ -695,10 +716,14 @@ fn handle_request<W: Write>(
                 .catalog
                 .active_job()?
                 .map(|(kind, job_id)| json!({ "kind": kind, "jobId": job_id }));
-            let catalog_source_current = session.catalog.source_matches_current(
-                &session.prepared.original_path,
-                session.prepared.report.kind,
-            )?;
+            let catalog_source_current = if session.catalog_source_verified {
+                true
+            } else {
+                session.catalog.source_matches_current(
+                    &session.prepared.original_path,
+                    session.prepared.report.kind,
+                )?
+            };
             session.catalog_source_verified = catalog_source_current;
             Ok(json!({
                 "protocolVersion": SIDECAR_PROTOCOL_VERSION,
@@ -1526,7 +1551,7 @@ fn cleanup_preflight(
 ) -> Result<CleanupPreflightReport> {
     let quick_check = session.quick_check()?;
     let source_read_only = session.database.is_read_only()?;
-    let catalog_source_current = if verify_source {
+    let catalog_source_current = if verify_source && !session.catalog_source_verified {
         let current = session.catalog.source_matches_current(
             &session.prepared.original_path,
             session.prepared.report.kind,

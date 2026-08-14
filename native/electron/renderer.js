@@ -59,6 +59,8 @@ let activeSourceBytes = 0;
 let activeWorkspaceView = "browse";
 let selectedSourceKind = null;
 let sourceGeneration = 0;
+let savedSessionLoading = false;
+let sessionDeletionInProgress = false;
 let messageRenderGeneration = 0;
 let packageInProgress = false;
 let cleanupMutationInProgress = false;
@@ -114,6 +116,8 @@ const elements = {
   workspaceScreen: document.querySelector("#workspace-screen"),
   enterWorkspace: document.querySelector("#enter-workspace"),
   changeSource: document.querySelector("#change-source"),
+  refreshSessions: document.querySelector("#refresh-sessions"),
+  savedSessionList: document.querySelector("#saved-session-list"),
   sourceReadyCard: document.querySelector("#source-ready-card"),
   selectedSourceName: document.querySelector("#selected-source-name"),
   selectedSourceDetail: document.querySelector("#selected-source-detail"),
@@ -326,6 +330,155 @@ function sourceDisplayName(path, kind) {
   return parts.pop() || sourceKindLabel(kind);
 }
 
+function sourceSelectionKind(kind) {
+  return {
+    directory: "directory",
+    imazing_archive: "archive",
+    sqlite: "sqlite"
+  }[kind] || kind;
+}
+
+function sessionDate(seconds) {
+  const value = Number(seconds) * 1000;
+  if (!Number.isFinite(value) || value <= 0) return "時間未知";
+  return new Intl.DateTimeFormat("zh-TW", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function renderSavedSessions(sessions) {
+  elements.savedSessionList.replaceChildren();
+  if (!sessions.length) {
+    const empty = document.createElement("p");
+    empty.className = "saved-session-empty";
+    empty.textContent = "找不到可辨識的分析 Session。選擇備份並完成掃描後會顯示在這裡。";
+    elements.savedSessionList.append(empty);
+    return;
+  }
+  for (const session of sessions) {
+    const item = document.createElement("article");
+    item.className = `saved-session-item${session.reusable ? "" : " is-unavailable"}`;
+    const main = document.createElement("div");
+    main.className = "saved-session-main";
+    const heading = document.createElement("div");
+    heading.className = "saved-session-heading";
+    const name = document.createElement("strong");
+    name.textContent = session.sourceName || sourceDisplayName(session.sourcePath, session.sourceKind);
+    const state = document.createElement("span");
+    state.className = "saved-session-state";
+    state.textContent = session.reusable ? "可直接載入" : "無法直接載入";
+    heading.append(name, state);
+    const sourcePath = document.createElement("span");
+    sourcePath.className = "saved-session-path";
+    sourcePath.textContent = `備份：${session.sourcePath}`;
+    sourcePath.title = session.sourcePath;
+    const sessionPath = document.createElement("span");
+    sessionPath.className = "saved-session-path saved-session-cache-path";
+    sessionPath.textContent = `Session：${session.sessionPath}`;
+    sessionPath.title = session.sessionPath;
+    const meta = document.createElement("span");
+    meta.className = "saved-session-meta";
+    meta.textContent = session.reusable
+      ? `${sourceKindLabel(session.sourceKind === "archive" ? "imazing_archive" : session.sourceKind)} · ` +
+        `${Number(session.attachmentCount).toLocaleString()} 個附件 · ` +
+        `${sessionDate(session.scanCompletedAt)} · Session ${session.cacheVersion}`
+      : `${session.unavailableReason || "Session 不完整"} · Session ${session.cacheVersion || "版本未知"}`;
+    main.append(heading, sourcePath, sessionPath, meta);
+    const actions = document.createElement("div");
+    actions.className = "saved-session-actions";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "secondary-button compact-button saved-session-open";
+    open.dataset.sessionOpen = session.id;
+    open.dataset.sessionKind = session.sourceKind;
+    open.disabled = !session.reusable;
+    open.title = session.reusable
+      ? `載入 ${session.sourcePath}`
+      : session.unavailableReason || "Session 無法直接載入";
+    open.textContent = "載入 Session";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger-button compact-button saved-session-delete";
+    remove.dataset.sessionDelete = session.id;
+    remove.dataset.sessionName = session.sourceName || sourceDisplayName(
+      session.sourcePath,
+      session.sourceKind
+    );
+    remove.dataset.sessionPath = session.sessionPath;
+    remove.title = "只刪除 LINE Cheater 的分析 Session，不會刪除 .imazingapp";
+    remove.textContent = "刪除 Session";
+    actions.append(open, remove);
+    item.append(main, actions);
+    elements.savedSessionList.append(item);
+  }
+}
+
+async function loadSavedSessions() {
+  if (savedSessionLoading || sessionDeletionInProgress) return;
+  savedSessionLoading = true;
+  elements.refreshSessions.disabled = true;
+  try {
+    const sessions = await bridge.listSessions();
+    renderSavedSessions(Array.isArray(sessions) ? sessions : []);
+  } catch (error) {
+    const message = document.createElement("p");
+    message.className = "saved-session-empty error";
+    message.textContent = `無法讀取 Session：${error.message}`;
+    elements.savedSessionList.replaceChildren(message);
+  } finally {
+    savedSessionLoading = false;
+    elements.refreshSessions.disabled = false;
+  }
+}
+
+async function deleteSavedSession(button) {
+  if (sessionDeletionInProgress || savedSessionLoading || button.disabled) return;
+  const sessionName = button.dataset.sessionName || "這個備份";
+  const sessionPath = button.dataset.sessionPath || "指定的 Session";
+  if (!await requestConfirmation({
+    title: `刪除「${sessionName}」的分析 Session？`,
+    message:
+      `即將刪除 LINE Cheater 的分析快取：\n${sessionPath}\n\n` +
+      "原始 LINE.imazingapp、已生成的瘦身 .imazingapp 及其中的聊天資料都不會被刪除。" +
+      "未來若再次開啟原始備份，將需要重新掃描及分析。",
+    cancelLabel: "保留 Session",
+    confirmLabel: "刪除 Session",
+    danger: true
+  })) return;
+
+  sessionDeletionInProgress = true;
+  elements.savedSessionList.setAttribute("aria-busy", "true");
+  for (const action of elements.savedSessionList.querySelectorAll("button")) {
+    action.disabled = true;
+  }
+  showOperationModal("正在刪除 Session", `正在清理 ${sessionPath}，請勿重複操作。`);
+  elements.operationModalCancel.classList.add("hidden");
+  await waitForUiPaint();
+  try {
+    const result = await bridge.deleteSession(button.dataset.sessionDelete);
+    if (result?.activeSessionClosed) resetAfterCandidateBuild();
+    if (!result?.deleted) {
+      throw new Error(result?.warning || "Session 未能完全刪除，請重新啟動後再試。");
+    }
+    updateOperationModalProgress(1, 1, "完成");
+    completeOperationModal(false, "分析 Session 已刪除；原始與瘦身 .imazingapp 均未修改。");
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    sessionDeletionInProgress = false;
+    closeOperationModal();
+    setStatus(`已刪除「${sessionName}」的分析 Session；備份 APP 未修改。`);
+    await loadSavedSessions();
+  } catch (error) {
+    sessionDeletionInProgress = false;
+    completeOperationModal(true, error.message);
+    setStatus(`刪除 Session 失敗：${error.message}`, true);
+    await loadSavedSessions();
+  } finally {
+    sessionDeletionInProgress = false;
+    elements.savedSessionList.removeAttribute("aria-busy");
+  }
+}
+
 function renderSessionSummary(info) {
   elements.sessionSummary.replaceChildren();
   const performance = info.performance || {};
@@ -337,6 +490,7 @@ function renderSessionSummary(info) {
     : "自動";
   for (const [label, value] of [
     ["類型", sourceKindLabel(info.source.kind)],
+    ["來源路徑", info.source.sourcePath],
     ["SQLite 檢查", info.quickCheck],
     ["來源唯讀", info.readOnly ? "是" : "否"],
     ["群組名稱資料", info.unifiedGroupLoaded ? "已載入" : "未提供"],
@@ -413,6 +567,7 @@ function enterWorkspace() {
 function returnToWelcome() {
   elements.workspaceScreen.classList.add("hidden");
   elements.welcomeScreen.classList.remove("hidden");
+  void loadSavedSessions();
   elements.enterWorkspace.focus();
 }
 
@@ -692,7 +847,7 @@ function completeOperationModal(error, message) {
 }
 
 function closeOperationModal() {
-  if (cleanupMutationInProgress || exportInProgress) return;
+  if (cleanupMutationInProgress || exportInProgress || sessionDeletionInProgress) return;
   elements.operationModal.classList.add("hidden");
   elements.operationModal.setAttribute("aria-hidden", "true");
   syncModalBusy();
@@ -1181,15 +1336,19 @@ function renderMessageLoadError() {
   setRetryVisible(elements.retryMessages, true);
 }
 
-async function openSource(kind) {
+async function openSource(kind, sessionId = null) {
   const requestSourceGeneration = ++sourceGeneration;
   const hadProvider = Boolean(provider);
-  showLoadModal("請在系統視窗選擇 LINE 備份來源。");
+  showLoadModal(sessionId
+    ? "正在讀取既有分析 Session…"
+    : "請在系統視窗選擇 LINE 備份來源。");
   updateLoadModalProgress(2);
   await waitForUiPaint();
   try {
     setStatus("正在開啟備份…");
-    const ready = await bridge.selectSource(kind);
+    const ready = sessionId
+      ? await bridge.openSession(sessionId)
+      : await bridge.selectSource(kind);
     if (!ready) {
       setStatus(hadProvider ? "已取消，保留目前備份。" : "已取消選擇備份。");
       closeLoadModal();
@@ -1292,10 +1451,9 @@ async function openSource(kind) {
       info.catalog.scanStatus !== "complete";
     elements.searchButton.disabled = true;
     setCandidateBuildDisabled(true);
-    if (kind !== "sqlite" &&
+    if (info.source.kind !== "sqlite" &&
         (!info.catalogSourceCurrent ||
-          info.catalog.scanStatus !== "complete" ||
-          info.catalog.attachmentCount === 0)) {
+          info.catalog.scanStatus !== "complete")) {
       await scanCatalog({ keepLoadModal: true });
       if (requestSourceGeneration !== sourceGeneration) return;
     } else if (info.catalog.scanStatus === "complete") {
@@ -1326,8 +1484,10 @@ async function openSource(kind) {
     updateLoadModalProgress(93, "正在顯示聊天室…");
     await loadChats("initial");
     updateLoadModalProgress(100, "完整備份解析完成。");
-    setStatus(cleanupPlanNotice || "備份已以唯讀模式開啟，可以進入工作區。");
-    selectedSourceKind = kind;
+    setStatus(cleanupPlanNotice || (sessionId
+      ? "既有 Session 已載入，不需要重新分析備份。"
+      : "備份已以唯讀模式開啟，可以進入工作區。"));
+    selectedSourceKind = sourceSelectionKind(info.source.kind);
     elements.selectedSourceName.textContent = sourceName;
     elements.selectedSourceDetail.textContent =
       `${sourceType} · ${formatBytes(sourceSize)} · SQLite ${finalInfo.quickCheck}`;
@@ -1352,6 +1512,7 @@ async function openSource(kind) {
     elements.sessionSummary.classList.add("hidden");
     setStatus(error.message, true);
     closeLoadModal();
+    if (sessionId) void loadSavedSessions();
   }
 }
 
@@ -3105,27 +3266,33 @@ function renderCategoryBulkActions() {
   const keepingAllThumbnails = Boolean(actionState?.keepingAllThumbnails);
   const deletingAllAttachments = Boolean(actionState?.deletingAllAttachments);
   const deletingAllChats = Boolean(actionState?.deletingAllChats);
-  const activeActions = [
-    keepingAllThumbnails && "只保留縮圖",
-    deletingAllAttachments && "刪除所有附件",
-    deletingAllChats && "刪除所有聊天室"
-  ].filter(Boolean);
+  const thumbnailCandidateCount = Number(actionState?.thumbnailCandidateCount) || 0;
+  const protectedThumbnailCount = Number(actionState?.protectedThumbnailCount) || 0;
+  const attachmentCount = Number(actionState?.attachmentCount) || 0;
+  const markedAttachmentCount = Number(actionState?.markedAttachmentCount) || 0;
+  const hasProtectedThumbnails = protectedThumbnailCount > 0;
   elements.categoryBulkTitle.textContent = `${label}快速設定`;
   elements.categoryBulkDescription.textContent = !actionState
     ? "正在確認目前的批次設定…"
-    : activeActions.length
-      ? `已套用：${activeActions.join("、")}；按相同按鈕即可批量取消。`
+    : deletingAllAttachments && hasProtectedThumbnails
+      ? `分類批次刪除仍啟用：已保留 ${protectedThumbnailCount.toLocaleString()} 個縮圖，目前標記 ${markedAttachmentCount.toLocaleString()} / ${attachmentCount.toLocaleString()} 個附件。`
+      : deletingAllAttachments
+        ? `分類批次刪除仍啟用：目前標記 ${markedAttachmentCount.toLocaleString()} / ${attachmentCount.toLocaleString()} 個附件；聊天室可個別取消。`
+        : hasProtectedThumbnails
+          ? `已保留 ${protectedThumbnailCount.toLocaleString()} / ${thumbnailCandidateCount.toLocaleString()} 個非空縮圖。`
+          : deletingAllChats
+            ? "已將這個分類的所有聊天室加入清理計畫；按相同按鈕即可批量取消。"
       : chatBacked
         ? `可一次處理整個${label}；刪除聊天室需先開啟進階模式。`
         : `${label}沒有可靠的聊天室歸屬，但可一次標記刪除這個分類的所有附件。`;
   elements.categoryKeepThumbnails.classList.toggle("hidden", !chatBacked);
   elements.categoryDeleteChats.classList.toggle("hidden", !chatBacked);
   elements.categoryKeepThumbnails.textContent = keepingAllThumbnails
-    ? "取消全部只保留縮圖"
-    : "全部只保留縮圖";
+    ? `取消保留 ${protectedThumbnailCount.toLocaleString()} 個縮圖`
+    : `全部只保留縮圖（${thumbnailCandidateCount.toLocaleString()}）`;
   elements.categoryDeleteAttachments.textContent = deletingAllAttachments
-    ? "取消刪除分類所有附件"
-    : "刪除分類所有附件";
+    ? hasProtectedThumbnails ? "取消刪除其他附件" : "取消刪除分類所有附件"
+    : hasProtectedThumbnails ? "刪除縮圖以外附件" : "刪除分類所有附件";
   elements.categoryDeleteChats.textContent = deletingAllChats
     ? "取消刪除分類所有聊天室"
     : "刪除分類所有聊天室";
@@ -3260,6 +3427,12 @@ function renderCleanupGroup(group) {
     marked.textContent = ` · 已標記 ${group.markedCount.toLocaleString()} 個`;
     counts.append(marked);
   }
+  if (group.keepingThumbnails && !group.plannedForChatRemoval) {
+    const kept = document.createElement("b");
+    kept.className = "cleanup-kept-count";
+    kept.textContent = ` · 已保留 ${group.nonemptyThumbnailCount.toLocaleString()} 個縮圖`;
+    counts.append(kept);
+  }
   main.append(heading, summary, counts);
   open.append(avatar, main);
 
@@ -3283,44 +3456,49 @@ function renderCleanupGroup(group) {
   }
   if (canOpen) {
     const toggleAll = document.createElement("button");
-    const fullyMarked = group.fileCount > 0 && group.markedCount === group.fileCount;
+    const deletingAllAttachments = Boolean(group.deletingAllAttachments);
+    const keepingThumbnails = Boolean(group.keepingThumbnails);
     toggleAll.type = "button";
-    toggleAll.className = `cleanup-group-action ${fullyMarked ? "is-cancel" : "is-delete"}`;
+    toggleAll.className =
+      `cleanup-group-action ${deletingAllAttachments ? "is-cancel" : "is-delete"}`;
     toggleAll.dataset.groupAction = "toggle_all";
     toggleAll.dataset.groupKey = group.key;
+    toggleAll.dataset.deletingAllAttachments = String(deletingAllAttachments);
+    toggleAll.dataset.keepingThumbnails = String(keepingThumbnails);
+    toggleAll.dataset.chatTitle = group.chatTitle;
     toggleAll.disabled = Boolean(group.plannedForChatRemoval);
     toggleAll.title = group.plannedForChatRemoval
       ? "附件會隨聊天室一起刪除；請先取消聊天室清理計畫"
       : "";
     toggleAll.textContent = group.plannedForChatRemoval
       ? "隨聊天室刪除"
-      : fullyMarked ? "取消刪除所有附件" : "刪除所有附件";
+      : deletingAllAttachments
+        ? keepingThumbnails ? "取消刪除其他附件" : "取消刪除所有附件"
+        : keepingThumbnails ? "刪除縮圖以外附件" : "刪除所有附件";
     actions.append(toggleAll);
   }
-  if (canOpen && group.thumbnailBackedImageCount > 0) {
+  if (canOpen && group.nonemptyThumbnailCount > 0) {
     const keepThumbnail = document.createElement("button");
     keepThumbnail.type = "button";
     keepThumbnail.className =
       `cleanup-group-action ${group.keepingThumbnails ? "is-cancel" : "is-delete"}`;
     keepThumbnail.dataset.groupAction = "keep_thumbnail";
     keepThumbnail.dataset.groupKey = group.key;
+    keepThumbnail.dataset.keepingThumbnails = String(Boolean(group.keepingThumbnails));
+    keepThumbnail.dataset.thumbnailCount = String(Number(group.nonemptyThumbnailCount) || 0);
     keepThumbnail.disabled = Boolean(group.plannedForChatRemoval);
     keepThumbnail.title = group.keepingThumbnails
-      ? "還原具有對應縮圖的圖片原檔"
-      : "只標記已有非空縮圖的圖片原檔；PDF、影片與無縮圖附件會保留";
-    keepThumbnail.textContent = group.keepingThumbnails ? "還原原始圖片" : "只保留縮圖";
+      ? "取消保護所有非空縮圖，並還原可安全配對的圖片原檔"
+      : "保留所有非空縮圖；只有能安全配對的圖片原檔會加入清理計畫";
+    keepThumbnail.textContent = group.keepingThumbnails ? "取消保留縮圖" : "只保留縮圖";
     actions.append(keepThumbnail);
   } else if (canOpen && group.chatKind === "community") {
     const unavailableThumbnail = document.createElement("button");
     unavailableThumbnail.type = "button";
     unavailableThumbnail.className = "cleanup-group-action";
     unavailableThumbnail.disabled = true;
-    unavailableThumbnail.textContent = group.hasThumbnail
-      ? "沒有可配對原圖"
-      : "沒有可保留縮圖";
-    unavailableThumbnail.title = group.hasThumbnail
-      ? "備份內只有縮圖，或原圖沒有相同的訊息 ID；不會冒險刪除未確認的原圖"
-      : "這個社群沒有非空縮圖可保留";
+    unavailableThumbnail.textContent = "沒有非空縮圖";
+    unavailableThumbnail.title = "這個社群沒有非空縮圖可保留";
     actions.append(unavailableThumbnail);
   }
   if (canOpen) {
@@ -3945,22 +4123,52 @@ async function changeAttachmentMark(checkbox) {
 }
 
 async function applyGroupAction(groupKey, action, button) {
+  const thumbnailCount = Number(button.dataset.thumbnailCount) || 0;
+  const cancellingThumbnailKeep = action === "keep_thumbnail" &&
+    button.dataset.keepingThumbnails === "true";
+  const thumbnailResult = cancellingThumbnailKeep
+    ? `已取消保留 ${thumbnailCount.toLocaleString()} 個縮圖。`
+    : `已保留 ${thumbnailCount.toLocaleString()} 個縮圖。`;
+  if (action === "toggle_all") {
+    const cancelling = button.dataset.deletingAllAttachments === "true";
+    const keepingThumbnails = button.dataset.keepingThumbnails === "true";
+    const chatTitle = button.dataset.chatTitle || "這個聊天室";
+    const attachmentScope = keepingThumbnails ? "縮圖以外附件" : "所有附件";
+    if (!await requestConfirmation({
+      title: cancelling
+        ? `取消刪除「${chatTitle}」的${attachmentScope}？`
+        : `刪除「${chatTitle}」的${attachmentScope}？`,
+      message: cancelling
+        ? "要取消這個聊天室目前的附件刪除設定嗎？\n\n若同時啟用只保留縮圖，圖片原檔的刪除設定仍會保留。"
+        : keepingThumbnails
+          ? "這會刪除圖片原圖、影片、PDF、語音及其他附件；因為已啟用「只保留縮圖」，所有非空縮圖都會優先保留。原始備份不會被修改。"
+          : "警告：這會刪除所有圖片原圖及縮圖，也包含影片、PDF、語音與其他附件。刪除縮圖後，聊天紀錄可能不再顯示圖片預覽；原始備份不會被修改。",
+      confirmLabel: cancelling
+        ? keepingThumbnails ? "取消刪除其他附件" : "取消刪除所有附件"
+        : keepingThumbnails ? "確認刪除其他附件" : "確認刪除所有附件",
+      danger: !cancelling
+    })) return;
+  }
   const originalText = button.textContent;
   button.disabled = true;
   button.textContent = "套用中…";
-  setStatus(action === "keep_thumbnail" ? "正在套用保留縮圖…" : "正在更新聊天室附件標記…", false);
+  setStatus(action === "keep_thumbnail"
+    ? cancellingThumbnailKeep ? "正在取消保留縮圖…" : "正在套用保留縮圖…"
+    : "正在更新聊天室附件標記…", false);
   try {
     await runCleanupMutation({
-      title: action === "keep_thumbnail" ? "正在設定只保留縮圖" : "正在更新聊天室附件",
+      title: action === "keep_thumbnail"
+        ? cancellingThumbnailKeep ? "正在取消保留縮圖" : "正在設定只保留縮圖"
+        : "正在更新聊天室附件",
       message: "正在分批寫入清理計畫，請勿重複操作或關閉此視窗。",
-      successMessage: action === "keep_thumbnail" ? "只保留縮圖設定已完成。" : "聊天室附件標記已更新。"
+      successMessage: action === "keep_thumbnail" ? thumbnailResult : "聊天室附件標記已更新。"
     }, async () => {
       cleanupOverview = await provider.applyCleanupGroupAction(groupKey, action);
       invalidateCleanupInsights();
       await loadCleanupPage({ verifySource: false });
       void refreshAdvancedPlanSummary();
     });
-    setStatus(action === "keep_thumbnail" ? "已套用保留縮圖。" : "已更新聊天室附件標記。", false);
+    setStatus(action === "keep_thumbnail" ? thumbnailResult : "已更新聊天室附件標記。", false);
   } catch (error) {
     reportCleanupMutationError(error);
   } finally {
@@ -3977,13 +4185,21 @@ async function applyCategoryKeepThumbnails() {
     cleanupCategoryActionState?.category === category &&
     cleanupCategoryActionState.keepingAllThumbnails
   );
+  const thumbnailCount = Number(cancelling
+    ? cleanupCategoryActionState?.protectedThumbnailCount
+    : cleanupCategoryActionState?.thumbnailCandidateCount) || 0;
+  const thumbnailResult = cancelling
+    ? `已取消保留 ${thumbnailCount.toLocaleString()} 個縮圖。`
+    : `已保留 ${thumbnailCount.toLocaleString()} 個縮圖。`;
   if (!await requestConfirmation({
     title: cancelling ? `取消${label}只保留縮圖？` : `將${label}只保留縮圖？`,
     message: cancelling
       ? `要批量取消${label}目前的只保留縮圖設定嗎？\n\n` +
-        "只會清除這個分類內相關圖片原檔的手動標記；安全自動標記及聊天室刪除計畫會保留。"
+        "將取消保護所有非空縮圖，並清除可安全配對之圖片原檔的手動標記；若仍啟用刪除所有附件，縮圖會重新加入清理計畫。安全自動標記及聊天室刪除計畫會保留。"
       : `要一次將${label}設定為只保留縮圖嗎？\n\n` +
-        "只會標記具有已辨識、非空縮圖的圖片原檔；縮圖、PDF、影片、無縮圖及無法確認的附件都會保留。已整個排入清理的聊天室不會變更。",
+        (cleanupCategoryActionState?.deletingAllAttachments
+          ? "目前已啟用刪除所有附件；套用後會優先保留所有非空縮圖，其餘原圖、空縮圖、影片、PDF、語音與其他附件仍會刪除。"
+          : "所有非空縮圖都會保留，不需要能與原圖配對；只有能安全配對的圖片原檔會加入清理計畫，PDF、影片、無縮圖及無法確認的附件不會額外標記。已整個排入清理的聊天室不會變更。"),
     confirmLabel: cancelling ? "取消全部只保留縮圖" : "全部只保留縮圖",
     danger: !cancelling
   })) return;
@@ -3991,9 +4207,7 @@ async function applyCategoryKeepThumbnails() {
     cleanupOverview = await runCleanupMutation({
       title: cancelling ? `正在取消${label}只保留縮圖` : `正在設定${label}`,
       message: "正在分批寫入清理計畫，請勿重複操作或關閉此視窗。",
-      successMessage: cancelling
-        ? `${label}的只保留縮圖設定已批量取消。`
-        : `${label}的只保留縮圖設定已完成。`
+      successMessage: `${label}：${thumbnailResult}`
     }, async () => {
       const overview = await provider.applyCleanupCategoryAction(
         category,
@@ -4009,9 +4223,7 @@ async function applyCategoryKeepThumbnails() {
       return cleanupOverview;
     });
     setStatus(
-      cancelling
-        ? `已批量取消${label}的只保留縮圖設定。`
-        : `已將${label}設定為只保留縮圖。`,
+      `${label}：${thumbnailResult}`,
       false
     );
   } catch (error) {
@@ -4036,14 +4248,27 @@ async function deleteCategoryAttachments() {
     cleanupCategoryActionState?.category === category &&
     cleanupCategoryActionState.deletingAllAttachments
   );
+  const protectedThumbnailCount = Number(
+    cleanupCategoryActionState?.protectedThumbnailCount
+  ) || 0;
+  const preservingThumbnails = protectedThumbnailCount > 0;
+  const attachmentScope = preservingThumbnails ? "縮圖以外附件" : "所有附件";
   if (!await requestConfirmation({
-    title: cancelling ? `取消刪除${label}的所有附件？` : `刪除${label}的所有附件？`,
+    title: cancelling
+      ? `取消刪除${label}的${attachmentScope}？`
+      : `刪除${label}的${attachmentScope}？`,
     message: cancelling
       ? `要批量取消${label}目前的所有手動附件刪除標記嗎？\n\n` +
-        "安全自動標記及聊天室刪除計畫會保留。"
+        (preservingThumbnails
+          ? `目前受保護的 ${protectedThumbnailCount.toLocaleString()} 個縮圖仍會保留，而能安全配對的圖片原檔仍會刪除；安全自動標記及聊天室刪除計畫也會保留。`
+          : "安全自動標記及聊天室刪除計畫會保留。")
       : `要將${label}內的所有附件加入清理計畫嗎？\n\n` +
-        "這會包含原圖、縮圖、影片、PDF 與其他附件，且不受上方附件類型篩選影響；原始備份不會被修改。",
-    confirmLabel: cancelling ? "取消刪除所有附件" : "刪除所有附件",
+        (preservingThumbnails
+          ? `這會刪除圖片原圖、空縮圖、影片、PDF、語音及其他附件；目前受保護的 ${protectedThumbnailCount.toLocaleString()} 個非空縮圖會優先保留。此操作不受上方附件類型篩選影響，原始備份不會被修改。`
+          : "警告：這會刪除所有圖片原圖及縮圖，也包含影片、PDF、語音與其他附件，且不受上方附件類型篩選影響。刪除縮圖後，聊天紀錄可能不再顯示圖片預覽；原始備份不會被修改。"),
+    confirmLabel: cancelling
+      ? preservingThumbnails ? "取消刪除其他附件" : "取消刪除所有附件"
+      : preservingThumbnails ? "確認刪除其他附件" : "確認刪除所有附件",
     danger: !cancelling
   })) return;
   try {
@@ -4051,8 +4276,8 @@ async function deleteCategoryAttachments() {
       title: cancelling ? `正在取消${label}附件刪除` : `正在標記${label}附件`,
       message: "正在分批寫入整個分類的附件清理計畫，請勿重複操作或關閉此視窗。",
       successMessage: cancelling
-        ? `${label}的所有手動附件刪除標記已取消。`
-        : `${label}的所有附件已加入清理計畫。`
+        ? `${label}的${preservingThumbnails ? "其他附件" : "所有附件"}手動刪除標記已取消。`
+        : `${label}的${attachmentScope}已加入清理計畫。`
     }, async () => {
       const overview = await provider.applyCleanupCategoryAction(
         category,
@@ -4069,8 +4294,8 @@ async function deleteCategoryAttachments() {
     });
     setStatus(
       cancelling
-        ? `已批量取消${label}的所有手動附件刪除標記。`
-        : `已將${label}的所有附件加入清理計畫。`,
+        ? `已批量取消${label}的${preservingThumbnails ? "其他附件" : "所有附件"}手動刪除標記。`
+        : `已將${label}的${attachmentScope}加入清理計畫。`,
       false
     );
   } catch (error) {
@@ -4443,6 +4668,28 @@ async function buildCandidate() {
       });
     }
     renderCandidateReport(report);
+    updatePackageModalProgress(100, "瘦身檔已建立，正在等待 Session 保留選擇。");
+    const deleteSession = await requestConfirmation({
+      title: "要刪除已分析的 Session 嗎？",
+      message:
+        "瘦身 .imazingapp 已成功建立。保留 Session 可讓你未來直接載入目前的分析結果，不必重新掃描大型備份。\n\n" +
+        "選擇刪除只會清理 LINE Cheater 的本機分析快取；原始備份與剛建立的瘦身 .imazingapp 都不會被刪除。",
+      cancelLabel: "保留 Session",
+      confirmLabel: "刪除 Session",
+      danger: true
+    });
+    try {
+      const cacheResult = await bridge.finalizeCandidateSession(!deleteSession);
+      report = { ...report, ...cacheResult };
+    } catch (error) {
+      report = {
+        ...report,
+        cacheCleared: false,
+        cacheRetained: true,
+        cacheCleanupWarning: `無法完成 Session 關閉程序：${error.message}`
+      };
+    }
+    renderCandidateReport(report);
     let successMessage =
       `候選檔完成：保留 ${report.outputEntries.toLocaleString()} 筆、` +
       `移除 ${report.removedEntries.toLocaleString()} 個檔案項目、` +
@@ -4452,12 +4699,22 @@ async function buildCandidate() {
     if (report.linkedDuplicateEntries > 0) {
       successMessage += " 此候選檔使用實驗性 symbolic link，請先以 iMazing 測試還原。";
     }
-    if (report.cacheCleared) {
+    if (report.cacheRetained) {
+      successMessage += report.sessionPath
+        ? ` 已保留分析 Session：${report.sessionPath}。`
+        : " 分析 Session 已保留；未來可從歡迎頁直接載入。";
+      if (report.cacheCleanupWarning) {
+        successMessage += ` 注意：${report.cacheCleanupWarning}。`;
+      }
+    } else if (report.cacheCleared) {
       successMessage += " LINE Cheater 的本機快取已清除；下次請重新選擇來源。";
     } else {
       successMessage +=
         ` 候選檔已成功，但本機快取未能完全清除：` +
         `${report.cacheCleanupWarning || "請重新啟動 LINE Cheater 後再試。"}。`;
+    }
+    if (!report.cacheRetained && report.cacheCleared && report.cacheCleanupWarning) {
+      successMessage += ` 注意：${report.cacheCleanupWarning}。`;
     }
     setStatus(successMessage);
     packageInProgress = false;
@@ -4500,6 +4757,17 @@ function updateCleanupFilter() {
 for (const button of document.querySelectorAll("[data-source]")) {
   button.addEventListener("click", () => void openSource(button.dataset.source));
 }
+elements.refreshSessions.addEventListener("click", () => void loadSavedSessions());
+elements.savedSessionList.addEventListener("click", (event) => {
+  const deleteButton = event.target.closest("button[data-session-delete]");
+  if (deleteButton) {
+    void deleteSavedSession(deleteButton);
+    return;
+  }
+  const button = event.target.closest("button[data-session-open]");
+  if (!button || button.disabled) return;
+  void openSource(button.dataset.sessionKind, button.dataset.sessionOpen);
+});
 elements.enterWorkspace.addEventListener("click", enterWorkspace);
 elements.changeSource.addEventListener("click", returnToWelcome);
 const sidebarItems = Array.from(document.querySelectorAll("[data-view]"));
@@ -4630,7 +4898,7 @@ document.addEventListener("keydown", (event) => {
   else if (openModal === elements.imageModal) void requestModalClose("image");
   else if (openModal === elements.restoreChecklistModal) void requestRestoreChecklistCancellation();
   else if (openModal === elements.operationModal &&
-           !cleanupMutationInProgress && !exportInProgress) {
+           !cleanupMutationInProgress && !exportInProgress && !sessionDeletionInProgress) {
     void requestModalClose("operation");
   } else if (openModal === elements.packageModal && !packageInProgress) {
     void requestModalClose("package");
@@ -4880,3 +5148,5 @@ bridge.on("duplicateHashProgress", (event) => {
     ? `正在計算 SHA-256… ${processed.toLocaleString()} / ${total.toLocaleString()}`
     : "正在計算 SHA-256…";
 });
+
+void loadSavedSessions();
