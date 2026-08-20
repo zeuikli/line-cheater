@@ -242,8 +242,17 @@ impl NativeSession {
             }
         }
         let partial = PathBuf::from(format!("{}.partial", output_path.display()));
-        if partial.exists() {
-            anyhow::bail!("partial conversation output already exists; remove it before retrying");
+        match fs::remove_file(&partial) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove stale conversation export: {}",
+                        partial.display()
+                    )
+                });
+            }
         }
 
         if self.prepared.report.kind != SourceKind::Sqlite && !self.catalog_source_verified {
