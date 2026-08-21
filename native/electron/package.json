@@ -1,7 +1,7 @@
 {
   "name": "line-cheater-desktop",
   "productName": "LINE Cheater",
-  "version": "0.1.30",
+  "version": "0.1.31",
   "private": true,
   "description": "LINE Cheater desktop app with a bounded-memory Rust backup core",
   "main": "main.cjs",

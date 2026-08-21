@@ -1,6 +1,6 @@
 [package]
 name = "line-cheater"
-version = "0.1.30"
+version = "0.1.31"
 edition = "2024"
 description = "Bounded-memory native core for browsing and slimming LINE iOS backups"
 license = "MIT"
