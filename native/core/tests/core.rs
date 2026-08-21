@@ -2698,6 +2698,8 @@ fn exports_a_complete_offline_conversation_zip_from_first_message_to_last() {
     add_many_text_messages(&source, 1_001);
     let work = temporary.path().join("conversation-work");
     let output_path = temporary.path().join("Alice-conversation.zip");
+    let partial_path = PathBuf::from(format!("{}.partial", output_path.display()));
+    fs::write(&partial_path, b"stale partial content").unwrap();
     let mut session = NativeSession::open(&source, &work).unwrap();
     let requests = [
         serde_json::json!({
@@ -2735,7 +2737,7 @@ fn exports_a_complete_offline_conversation_zip_from_first_message_to_last() {
     assert_eq!(export_response["result"]["messages"], 1_005);
     assert_eq!(export_response["result"]["attachments"], 2);
     assert!(events.contains("conversationExportProgress"));
-    assert!(!PathBuf::from(format!("{}.partial", output_path.display())).exists());
+    assert!(!partial_path.exists());
 
     let mut archive = zip::ZipArchive::new(fs::File::open(&output_path).unwrap()).unwrap();
     let attachment_entries = (0..archive.len())
