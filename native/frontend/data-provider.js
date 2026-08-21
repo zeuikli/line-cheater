@@ -182,13 +182,21 @@
     if (paths.length && (source !== null || chatPk !== null)) {
       throw new TypeError("Export paths cannot be combined with a chat scope.");
     }
+    var timezoneOffsetMinutes = options.timezoneOffsetMinutes === undefined
+      || options.timezoneOffsetMinutes === null
+      ? -new Date().getTimezoneOffset()
+      : Number(options.timezoneOffsetMinutes);
+    if (!Number.isInteger(timezoneOffsetMinutes) || Math.abs(timezoneOffsetMinutes) > 840) {
+      throw new RangeError("timezoneOffsetMinutes must be an integer within ±840.");
+    }
     return this.bridge.request("exportAttachments", {
       output: options.output,
       paths: paths,
       source: source,
       chatPk: chatPk,
       imagesOnly: Boolean(options.imagesOnly),
-      includeThumbnails: Boolean(options.includeThumbnails)
+      includeThumbnails: Boolean(options.includeThumbnails),
+      timezoneOffsetMinutes: timezoneOffsetMinutes
     });
   };
 
