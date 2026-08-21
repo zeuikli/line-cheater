@@ -3,7 +3,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { once } = require("node:events");
-const { SidecarClient } = require("./sidecar-client.cjs");
+const {
+  SidecarClient,
+  WINDOWS_STACK_OVERFLOW_EXIT_CODE,
+  sidecarExitError
+} = require("./sidecar-client.cjs");
 
 const responsiveFixture = String.raw`
 process.stdout.write(JSON.stringify({event:"ready",protocolVersion:1}) + "\n");
@@ -104,6 +108,16 @@ test("fails readiness when the sidecar stops producing output", async () => {
   });
   await assert.rejects(client.ready, (error) => error.code === "sidecar_not_ready");
   assert.equal(client.closed, true);
+});
+
+test("explains Windows stack-overflow sidecar exits", async () => {
+  const error = sidecarExitError(
+    WINDOWS_STACK_OVERFLOW_EXIT_CODE,
+    null,
+    "thread 'main' has overflowed its stack"
+  );
+  assert.match(error.message, /stack overflow while parsing the backup/);
+  assert.match(error.message, /overflowed its stack/);
 });
 
 test("cancels an in-flight sidecar request and terminates the child", async () => {

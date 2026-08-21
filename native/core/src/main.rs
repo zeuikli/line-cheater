@@ -140,7 +140,33 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+#[cfg(windows)]
+const WINDOWS_SIDECAR_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn main() {
+    if let Err(error) = run_with_platform_stack() {
+        eprintln!("{error:#}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(windows)]
+fn run_with_platform_stack() -> Result<()> {
+    std::thread::Builder::new()
+        .name("line-sidecar".to_string())
+        .stack_size(WINDOWS_SIDECAR_STACK_BYTES)
+        .spawn(run)
+        .map_err(anyhow::Error::from)?
+        .join()
+        .map_err(|_| anyhow::anyhow!("LINE native sidecar worker panicked"))?
+}
+
+#[cfg(not(windows))]
+fn run_with_platform_stack() -> Result<()> {
+    run()
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Inspect { source } => print_json(&inspect_source(&source)?)?,
