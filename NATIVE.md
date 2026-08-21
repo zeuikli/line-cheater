@@ -32,6 +32,10 @@ grouped below rather than treated as separate feature changes.
 - `52bec56 Fix large size issue` hardened large-backup source staging, sidecar
   startup and cancellation behavior, bounded IPC responses, and the generated
   large-fixture regression coverage.
+- The Windows sidecar now starts its native work on a 32 MiB stack, reducing
+  the chance that archive parsing terminates the process on unusually complex
+  `.imazingapp` ZIP metadata. The desktop bridge recognizes Windows'
+  `0xC00000FD` stack-overflow exit code and explains the likely backup issue.
 - `0398dcf ci: add manual macOS signing test` added a manual Developer ID
   signing verification workflow. `8cd4c45 ci: notarize macOS DMG releases`
   added passwordless P12 import, `notarytool` submission, ticket stapling,

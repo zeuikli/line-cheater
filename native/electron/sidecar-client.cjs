@@ -7,6 +7,20 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESPONSE_LINE_BYTES = 16 * 1024 * 1024;
 const STDERR_TAIL_BYTES = 32 * 1024;
 const READY_IDLE_TIMEOUT_MS = 60_000;
+const WINDOWS_STACK_OVERFLOW_EXIT_CODE = 0xC00000FD;
+
+function sidecarExitError(code, signal, detail) {
+  const exitStatus = code === null ? signal : code;
+  const stackOverflow = Number(code) >>> 0 === WINDOWS_STACK_OVERFLOW_EXIT_CODE;
+  const hint = stackOverflow
+    ? " Windows reported a stack overflow while parsing the backup. Update LINE Cheater and try the backup again. If it persists, the .imazingapp ZIP may be damaged or unsupported."
+    : "";
+  return new Error(
+    `Rust sidecar exited unexpectedly (${exitStatus}).` +
+    (detail ? ` ${detail}` : "") +
+    hint
+  );
+}
 
 class SidecarClient extends EventEmitter {
   static async start(command, args, options) {
@@ -44,10 +58,7 @@ class SidecarClient extends EventEmitter {
     this.child.on("exit", (code, signal) => {
       if (!this.closed) {
         const detail = this.stderrTail.trim();
-        this.fail(new Error(
-          `Rust sidecar exited unexpectedly (${code === null ? signal : code}).` +
-          (detail ? ` ${detail}` : "")
-        ));
+        this.fail(sidecarExitError(code, signal, detail));
       }
     });
   }
@@ -225,5 +236,7 @@ class SidecarClient extends EventEmitter {
 module.exports = {
   MAX_REQUEST_BYTES,
   MAX_RESPONSE_LINE_BYTES,
+  WINDOWS_STACK_OVERFLOW_EXIT_CODE,
+  sidecarExitError,
   SidecarClient
 };
