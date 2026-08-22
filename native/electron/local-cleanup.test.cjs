@@ -254,3 +254,13 @@ test("cloud deletion is disabled without an official authenticated provider", ()
   assert.match(capabilities.cloudDeletion.reason, /官方|official/i);
   assert.equal(capabilities.cloudDeletion.canClaimRemoteDeletion, false);
 });
+
+test("Windows integration uses a GUI fixture that accepts a graceful taskkill", () => {
+  const verifier = fs.readFileSync(
+    path.join(__dirname, "scripts", "verify-windows-local-cleanup.cjs"),
+    "utf8"
+  );
+  assert.match(verifier, /\/target:winexe/i);
+  assert.match(verifier, /Application\.Run/);
+  assert.doesNotMatch(verifier, /copyFileSync\(process\.execPath/);
+});

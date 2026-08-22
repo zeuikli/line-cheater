@@ -22,13 +22,48 @@ if (process.env.CI !== "true" || process.env.GITHUB_ACTIONS !== "true") {
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "line-cheater-win-process-"));
 const fixtureBin = path.join(fixtureRoot, "LINE", "bin");
 const fixtureExecutable = path.join(fixtureBin, "LINE.exe");
+const fixtureSource = path.join(fixtureRoot, "GracefulLineFixture.cs");
 fs.mkdirSync(fixtureBin, { recursive: true });
-fs.copyFileSync(process.execPath, fixtureExecutable);
+fs.writeFileSync(fixtureSource, [
+  "using System;",
+  "using System.Windows.Forms;",
+  "static class GracefulLineFixture {",
+  "  [STAThread]",
+  "  static void Main() {",
+  "    Application.EnableVisualStyles();",
+  "    using (var window = new Form()) {",
+  "      window.Text = \"LINE graceful quit fixture\";",
+  "      window.ShowInTaskbar = false;",
+  "      window.Left = -32000;",
+  "      window.Top = -32000;",
+  "      window.Width = 1;",
+  "      window.Height = 1;",
+  "      Application.Run(window);",
+  "    }",
+  "  }",
+  "}"
+].join("\n"));
 
-const helper = spawn(fixtureExecutable, [
-  "-e",
-  "setInterval(() => {}, 1000)"
+const csc = path.join(
+  process.env.WINDIR || "C:\\Windows",
+  "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"
+);
+assert.equal(fs.existsSync(csc), true, `C# compiler not found at ${csc}`);
+const compilation = spawnSync(csc, [
+  "/nologo",
+  "/target:winexe",
+  `/out:${fixtureExecutable}`,
+  "/reference:System.Windows.Forms.dll",
+  fixtureSource
 ], {
+  encoding: "utf8",
+  windowsHide: true
+});
+if (compilation.status !== 0) {
+  throw new Error(`Could not compile the graceful LINE fixture:\n${compilation.stdout}\n${compilation.stderr}`);
+}
+
+const helper = spawn(fixtureExecutable, [], {
   detached: false,
   stdio: "ignore",
   windowsHide: true
