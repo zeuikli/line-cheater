@@ -262,5 +262,7 @@ test("Windows integration uses a GUI fixture that accepts a graceful taskkill", 
   );
   assert.match(verifier, /\/target:winexe/i);
   assert.match(verifier, /Application\.Run/);
+  assert.match(verifier, /window\.Shown/);
+  assert.match(verifier, /fixtureReady/);
   assert.doesNotMatch(verifier, /copyFileSync\(process\.execPath/);
 });

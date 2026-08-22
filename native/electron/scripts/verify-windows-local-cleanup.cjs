@@ -23,13 +23,15 @@ const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "line-cheater-win-proc
 const fixtureBin = path.join(fixtureRoot, "LINE", "bin");
 const fixtureExecutable = path.join(fixtureBin, "LINE.exe");
 const fixtureSource = path.join(fixtureRoot, "GracefulLineFixture.cs");
+const fixtureReady = path.join(fixtureRoot, "window-ready");
 fs.mkdirSync(fixtureBin, { recursive: true });
 fs.writeFileSync(fixtureSource, [
   "using System;",
+  "using System.IO;",
   "using System.Windows.Forms;",
   "static class GracefulLineFixture {",
   "  [STAThread]",
-  "  static void Main() {",
+  "  static void Main(string[] args) {",
   "    Application.EnableVisualStyles();",
   "    using (var window = new Form()) {",
   "      window.Text = \"LINE graceful quit fixture\";",
@@ -38,6 +40,7 @@ fs.writeFileSync(fixtureSource, [
   "      window.Top = -32000;",
   "      window.Width = 1;",
   "      window.Height = 1;",
+  "      window.Shown += (sender, eventArgs) => File.WriteAllText(args[0], \"ready\");",
   "      Application.Run(window);",
   "    }",
   "  }",
@@ -63,7 +66,7 @@ if (compilation.status !== 0) {
   throw new Error(`Could not compile the graceful LINE fixture:\n${compilation.stdout}\n${compilation.stderr}`);
 }
 
-const helper = spawn(fixtureExecutable, [], {
+const helper = spawn(fixtureExecutable, [fixtureReady], {
   detached: false,
   stdio: "ignore",
   windowsHide: true
@@ -85,10 +88,10 @@ async function waitFor(predicate, timeoutMs = 15000) {
 async function main() {
   try {
     assert.equal(
-      await waitFor(async () => (await listLineProcesses("win32"))
+      await waitFor(async () => fs.existsSync(fixtureReady) && (await listLineProcesses("win32"))
         .some((entry) => entry.pid === helper.pid)),
       true,
-      "tasklist did not discover the LINE.exe fixture"
+      "the LINE.exe fixture did not create its window and become discoverable"
     );
 
     let confirmations = 0;
