@@ -43,7 +43,7 @@ jobs:
           if-no-files-found: error
           path: native/tauri/src-tauri/gen/apple/build/arm64-sim/*.app
 
-  android-debug:
+  android-release-arm64:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -60,18 +60,18 @@ jobs:
       - name: Install Android NDK and Rust targets
         run: |
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
-          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+          rustup target add aarch64-linux-android
           echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Install frontend dependencies
         run: npm ci
         working-directory: native/tauri
-      - name: Generate and build unsigned Android APKs
+      - name: Generate and build the optimized arm64 Android APK
         run: |
           npm run tauri android init -- --ci
-          npm run tauri android build -- --debug --apk
+          npm run tauri android build -- --apk --target aarch64 --split-per-abi
         working-directory: native/tauri
       - uses: actions/upload-artifact@v6
         with:
-          name: line-cheater-android-debug
+          name: line-cheater-android-arm64
           if-no-files-found: error
           path: native/tauri/src-tauri/gen/android/app/build/outputs/apk/**/*.apk

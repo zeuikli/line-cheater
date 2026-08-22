@@ -144,6 +144,13 @@ test("CI prepares the ignored Tauri frontend before workspace Rust compilation",
   }
 });
 
+test("Android CI ships an optimized arm64 APK instead of a universal debug bundle", () => {
+  const mobileWorkflow = read("../../.github/workflows/tauri-mobile.yml");
+  assert.match(mobileWorkflow, /android build -- --apk --target aarch64 --split-per-abi/);
+  assert.doesNotMatch(mobileWorkflow, /android build -- --debug/);
+  assert.doesNotMatch(mobileWorkflow, /rustup target add[^\n]*armv7/);
+});
+
 test("Windows local cleanup uses only stable metadata identity APIs", () => {
   const cleanup = read("src-tauri/src/local_cleanup.rs");
   assert.doesNotMatch(cleanup, /\.volume_serial_number\(\)|\.file_index\(\)/);

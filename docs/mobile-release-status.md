@@ -27,7 +27,7 @@
   Payload archive is 5,626,050 bytes, targets iOS 14.0+, and can be signed by Xcode Personal Team or
   a personal-Apple-ID sideload tool. A separate command installs directly once Xcode has an account
   capable of creating the development provisioning profile.
-- Current regression count: 54 Rust tests, 93 Electron fallback tests, 11 Tauri architecture tests,
+- Current regression count: 54 Rust tests, 93 Electron fallback tests, 12 Tauri architecture tests,
   and 3 web/PWA contract tests pass; Clippy passes with warnings denied.
 
 ## Release gates still requiring external setup
