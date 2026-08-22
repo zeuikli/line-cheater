@@ -786,11 +786,9 @@ test("provides a GitHub Actions Windows packaging workflow", () => {
   assert.match(workflow, /Windows-x64\.zip/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-build/);
   assert.match(workflow, /gh release upload/);
-  assert.match(windowsLocalVerifier, /\/target:winexe/i);
-  assert.match(windowsLocalVerifier, /Application\.Run/);
-  assert.match(windowsLocalVerifier, /window\.Shown/);
-  assert.match(windowsLocalVerifier, /fixtureReady/);
-  assert.doesNotMatch(windowsLocalVerifier, /copyFileSync\(process\.execPath/);
+  assert.match(windowsLocalVerifier, /copyFileSync\(process\.execPath, fixtureExecutable\)/);
+  assert.match(windowsLocalVerifier, /assert\.rejects/);
+  assert.match(windowsLocalVerifier, /line_did_not_quit/);
   assert.match(windowsLocalVerifier, /listLineProcesses\("win32"\)/);
   assert.match(windowsLocalVerifier, /ensureLineClosed/);
   assert.match(windowsLocalVerifier, /requestLineQuit\("win32"\)/);

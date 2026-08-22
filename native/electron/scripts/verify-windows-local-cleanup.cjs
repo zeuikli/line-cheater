@@ -22,53 +22,16 @@ if (process.env.CI !== "true" || process.env.GITHUB_ACTIONS !== "true") {
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "line-cheater-win-process-"));
 const fixtureBin = path.join(fixtureRoot, "LINE", "bin");
 const fixtureExecutable = path.join(fixtureBin, "LINE.exe");
-const fixtureSource = path.join(fixtureRoot, "GracefulLineFixture.cs");
-const fixtureReady = path.join(fixtureRoot, "window-ready");
 fs.mkdirSync(fixtureBin, { recursive: true });
-fs.writeFileSync(fixtureSource, [
-  "using System;",
-  "using System.IO;",
-  "using System.Windows.Forms;",
-  "static class GracefulLineFixture {",
-  "  [STAThread]",
-  "  static void Main(string[] args) {",
-  "    Application.EnableVisualStyles();",
-  "    using (var window = new Form()) {",
-  "      window.Text = \"LINE graceful quit fixture\";",
-  "      window.ShowInTaskbar = false;",
-  "      window.Left = -32000;",
-  "      window.Top = -32000;",
-  "      window.Width = 1;",
-  "      window.Height = 1;",
-  "      window.Shown += (sender, eventArgs) => File.WriteAllText(args[0], \"ready\");",
-  "      Application.Run(window);",
-  "    }",
-  "  }",
-  "}"
-].join("\n"));
+fs.copyFileSync(process.execPath, fixtureExecutable);
 
-const csc = path.join(
-  process.env.WINDIR || "C:\\Windows",
-  "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe"
-);
-assert.equal(fs.existsSync(csc), true, `C# compiler not found at ${csc}`);
-const compilation = spawnSync(csc, [
-  "/nologo",
-  "/target:winexe",
-  `/out:${fixtureExecutable}`,
-  "/reference:System.Windows.Forms.dll",
-  fixtureSource
+const helper = spawn(fixtureExecutable, [
+  "-e",
+  "setInterval(() => {}, 1000)"
 ], {
-  encoding: "utf8",
-  windowsHide: true
-});
-if (compilation.status !== 0) {
-  throw new Error(`Could not compile the graceful LINE fixture:\n${compilation.stdout}\n${compilation.stderr}`);
-}
-
-const helper = spawn(fixtureExecutable, [fixtureReady], {
   detached: false,
-  stdio: "ignore"
+  stdio: "ignore",
+  windowsHide: true
 });
 
 function delay(milliseconds) {
@@ -87,34 +50,46 @@ async function waitFor(predicate, timeoutMs = 15000) {
 async function main() {
   try {
     assert.equal(
-      await waitFor(async () => fs.existsSync(fixtureReady) && (await listLineProcesses("win32"))
+      await waitFor(async () => (await listLineProcesses("win32"))
         .some((entry) => entry.pid === helper.pid)),
       true,
-      "the LINE.exe fixture did not create its window and become discoverable"
+      "tasklist did not discover the LINE.exe fixture"
+    );
+
+    try {
+      await requestLineQuit("win32");
+    } catch {
+      // A console fixture may make taskkill return a non-zero status. That is
+      // acceptable: production must not add /F just to turn this into success.
+    }
+    assert.equal(
+      (await listLineProcesses("win32")).some((entry) => entry.pid === helper.pid),
+      true,
+      "the non-force quit unexpectedly terminated the uncooperative fixture"
     );
 
     let confirmations = 0;
-    const closed = await ensureLineClosed({
-      platform: "win32",
-      listProcesses: () => listLineProcesses("win32"),
-      confirmQuit: async () => {
-        confirmations += 1;
-        return true;
-      },
-      requestQuit: () => requestLineQuit("win32"),
-      attempts: 30,
-      wait: delay
-    });
-
-    assert.equal(closed, true);
+    await assert.rejects(
+      ensureLineClosed({
+        platform: "win32",
+        listProcesses: () => listLineProcesses("win32"),
+        confirmQuit: async () => {
+          confirmations += 1;
+          return true;
+        },
+        requestQuit: async () => {},
+        attempts: 2,
+        wait: () => delay(50)
+      }),
+      (error) => error && error.code === "line_did_not_quit"
+    );
     assert.equal(confirmations, 1);
     assert.equal(
-      await waitFor(async () => !(await listLineProcesses("win32"))
-        .some((entry) => entry.pid === helper.pid)),
+      (await listLineProcesses("win32")).some((entry) => entry.pid === helper.pid),
       true,
-      "LINE.exe fixture remained after the graceful taskkill request"
+      "the startup gate must leave an uncooperative LINE process untouched"
     );
-    process.stdout.write("Windows LINE process gate integration passed.\n");
+    process.stdout.write("Windows LINE process gate fail-closed integration passed.\n");
   } finally {
     if (helper.exitCode === null) {
       spawnSync("taskkill.exe", ["/PID", String(helper.pid), "/F"], {

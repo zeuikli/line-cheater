@@ -255,14 +255,12 @@ test("cloud deletion is disabled without an official authenticated provider", ()
   assert.equal(capabilities.cloudDeletion.canClaimRemoteDeletion, false);
 });
 
-test("Windows integration uses a GUI fixture that accepts a graceful taskkill", () => {
+test("Windows integration proves that an uncooperative real process fails closed", () => {
   const verifier = fs.readFileSync(
     path.join(__dirname, "scripts", "verify-windows-local-cleanup.cjs"),
     "utf8"
   );
-  assert.match(verifier, /\/target:winexe/i);
-  assert.match(verifier, /Application\.Run/);
-  assert.match(verifier, /window\.Shown/);
-  assert.match(verifier, /fixtureReady/);
-  assert.doesNotMatch(verifier, /copyFileSync\(process\.execPath/);
+  assert.match(verifier, /copyFileSync\(process\.execPath, fixtureExecutable\)/);
+  assert.match(verifier, /assert\.rejects/);
+  assert.match(verifier, /line_did_not_quit/);
 });
