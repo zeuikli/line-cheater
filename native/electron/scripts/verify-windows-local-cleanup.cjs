@@ -68,8 +68,7 @@ if (compilation.status !== 0) {
 
 const helper = spawn(fixtureExecutable, [fixtureReady], {
   detached: false,
-  stdio: "ignore",
-  windowsHide: true
+  stdio: "ignore"
 });
 
 function delay(milliseconds) {
