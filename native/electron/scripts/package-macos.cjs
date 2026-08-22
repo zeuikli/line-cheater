@@ -212,7 +212,10 @@ function assertSingleArchitecture(target, label) {
     .trim()
     .split(/\s+/)
     .filter(Boolean);
-  if (architectures.length !== 1 || architectures[0] !== architecture) {
+  const normalizedArchitectures = architectures.map((value) =>
+    value === "x86_64" ? "x64" : value
+  );
+  if (normalizedArchitectures.length !== 1 || normalizedArchitectures[0] !== architecture) {
     throw new Error(
       `${label} architecture is ${architectures.join(", ") || "unknown"}; ` +
       `expected exactly ${architecture}.`

@@ -694,6 +694,7 @@ test("supports ad-hoc and Developer ID macOS signatures", () => {
 test("refuses to mislabel mixed-architecture macOS packages", () => {
   assert.match(macPackager, /assertSingleArchitecture/);
   assert.match(macPackager, /"-archs", target/);
+  assert.match(macPackager, /x86_64.*x64/);
   assert.match(macPackager, /Electron runtime/);
   assert.match(macPackager, /Rust sidecar/);
 });
