@@ -149,6 +149,10 @@ test("Android CI ships an optimized arm64 APK instead of a universal debug bundl
   assert.match(mobileWorkflow, /android build -- --apk --target aarch64 --split-per-abi/);
   assert.doesNotMatch(mobileWorkflow, /android build -- --debug/);
   assert.doesNotMatch(mobileWorkflow, /rustup target add[^\n]*armv7/);
+  assert.match(mobileWorkflow, /keytool -genkeypair/);
+  assert.match(mobileWorkflow, /apksigner" sign/);
+  assert.match(mobileWorkflow, /apksigner" verify --verbose --print-certs/);
+  assert.match(mobileWorkflow, /line-cheater-android-arm64-ci-signed/);
 });
 
 test("Windows local cleanup uses only stable metadata identity APIs", () => {
