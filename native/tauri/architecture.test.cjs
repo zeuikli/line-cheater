@@ -131,3 +131,15 @@ test("supports an explicit Apple Development sideload without Distribution crede
   assert.match(unsignedBuilder, /\.ipa/);
   assert.doesNotMatch(unsignedBuilder, /["']--debug["']/);
 });
+
+test("CI prepares the ignored Tauri frontend before workspace Rust compilation", () => {
+  const desktopWorkflow = read("../../.github/workflows/tauri-desktop.yml");
+  const macosWorkflow = read("../../.github/workflows/release-macos.yml");
+  for (const workflow of [desktopWorkflow, macosWorkflow]) {
+    const buildUi = workflow.indexOf("npm run build:ui");
+    const cargoTest = workflow.indexOf("cargo test --workspace");
+    assert.notEqual(buildUi, -1);
+    assert.notEqual(cargoTest, -1);
+    assert.ok(buildUi < cargoTest, "the shared frontend must exist before cargo test compiles Tauri");
+  }
+});

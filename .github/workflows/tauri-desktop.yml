@@ -42,6 +42,7 @@ jobs:
         run: |
           npm ci
           npm test
+          npm run build:ui
         working-directory: native/tauri
       - name: Run Rust tests, formatting, and Clippy
         shell: bash
