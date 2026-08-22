@@ -50,6 +50,16 @@
             </button>
           </div>
 
+          <section class="local-cleanup-entry" aria-labelledby="local-cleanup-entry-title">
+            <div>
+              <h3 id="local-cleanup-entry-title">清理這台電腦的 LINE</h3>
+              <p>掃描 macOS／Windows LINE 的可重建快取，選取後移到系統垃圾桶。</p>
+            </div>
+            <button id="local-cleanup-start" class="secondary-button" type="button">
+              掃描本機 LINE
+            </button>
+          </section>
+
           <section class="saved-sessions" aria-labelledby="saved-sessions-title">
             <header class="saved-sessions-header">
               <div>
@@ -84,6 +94,52 @@
               <span aria-hidden="true">→</span>
             </button>
           </footer>
+        </section>
+      </div>
+    </section>
+
+    <section id="local-cleanup-screen" class="local-cleanup-screen app-screen hidden"
+             aria-labelledby="local-cleanup-title">
+      <div class="local-cleanup-layout">
+        <header class="local-cleanup-header">
+          <div>
+            <p class="section-kicker">LOCAL LINE CLEANUP</p>
+            <h1 id="local-cleanup-title">清理這台電腦的 LINE</h1>
+            <p id="local-cleanup-profile" class="muted">正在尋找 LINE 資料…</p>
+          </div>
+          <button id="local-cleanup-back" class="secondary-button" type="button">返回</button>
+        </header>
+
+        <aside class="local-cloud-warning" role="note">
+          <strong>雲端副本不會由本機刪除</strong>
+          <p id="local-cloud-reason">
+            LINE 未提供消費者桌面聊天記錄的官方刪除 API；本機快取可能在重新開啟 LINE 後再次下載。
+          </p>
+        </aside>
+
+        <section class="local-cleanup-panel">
+          <header class="local-cleanup-toolbar">
+            <div>
+              <strong id="local-cleanup-summary">尚未掃描</strong>
+              <p id="local-cleanup-status" role="status" aria-live="polite">請開始掃描。</p>
+            </div>
+            <div class="local-cleanup-actions">
+              <button id="local-cleanup-refresh" class="secondary-button" type="button">重新掃描</button>
+              <button id="local-cleanup-select-all" class="secondary-button" type="button" disabled>全選</button>
+              <button id="local-cleanup-delete" class="danger-button" type="button" disabled>
+                移到垃圾桶
+              </button>
+            </div>
+          </header>
+          <div id="local-cleanup-items" class="local-cleanup-items" role="list"
+               aria-label="可清理的 LINE 本機快取">
+            <div class="empty-state">尚未掃描本機 LINE 快取。</div>
+          </div>
+          <nav class="local-cleanup-pagination" aria-label="本機快取分頁">
+            <button id="local-cleanup-previous" type="button" disabled>上一頁</button>
+            <span id="local-cleanup-page-info">第 1 頁</span>
+            <button id="local-cleanup-next" type="button" disabled>下一頁</button>
+          </nav>
         </section>
       </div>
     </section>

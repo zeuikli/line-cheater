@@ -48,6 +48,13 @@ jobs:
         with:
           rust-components: rustfmt, clippy
 
+      - name: Prepare Tauri frontend for workspace checks
+        if: ${{ matrix.arch == 'arm64' }}
+        working-directory: native/tauri
+        run: |
+          npm ci
+          npm run build:ui
+
       - name: Check Rust formatting
         if: ${{ matrix.arch == 'arm64' }}
         run: cargo fmt --all --check

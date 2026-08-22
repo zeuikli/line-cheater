@@ -67,7 +67,14 @@ handle, or arbitrary filesystem methods. The main process:
   retains or deletes the complete source session according to the user's
   explicit choice. Candidate output inside the internal cache is rejected
   before construction, and Session deletion never removes source or candidate
-  `.imazingapp` files.
+  `.imazingapp` files;
+- gates startup on the verified LINE desktop process exiting, discovers only
+  fixed macOS/Windows profile roots, and exposes local cache entries through
+  opaque inventory IDs rather than renderer-provided filesystem paths;
+- rechecks the LINE process, allowlisted root, symlink status, and file metadata
+  immediately before moving selected local cache files to Trash/Recycle Bin.
+  This mode deliberately excludes encrypted chat databases and does not claim
+  that local cache removal deleted LINE cloud or another device's copy.
 
 Do not replace this bridge with a general `ipcRenderer.send`, filesystem, shell,
 or child-process API.

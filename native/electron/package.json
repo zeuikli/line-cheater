@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
-    "test": "node --test ../frontend/data-provider.test.js session-cache.test.cjs sidecar-client.test.cjs update-checker.test.cjs renderer-shell.test.cjs",
+    "test": "node --test ../frontend/data-provider.test.js session-cache.test.cjs sidecar-client.test.cjs update-checker.test.cjs local-cleanup.test.cjs renderer-shell.test.cjs",
     "build:native:mac": "cargo build --manifest-path ../../Cargo.toml -p line-cheater --release",
     "package:mac": "npm test && npm run build:native:mac && node scripts/package-macos.cjs",
     "package:dmg": "./scripts/package-dmg.sh",

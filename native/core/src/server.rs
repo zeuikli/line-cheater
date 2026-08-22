@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
+use crate::cancel::{CancellationScope, CancellationToken, check_cancelled};
 use crate::candidate::{
     CandidateOptions, build_candidate_with_options, line_square_rebuild_required,
 };
@@ -28,6 +29,13 @@ use crate::source::{PreparedSource, SourceKind, prepare_source_reporting};
 pub const SIDECAR_PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InProcessResponse {
+    pub result: Value,
+    pub events: Vec<Value>,
+}
+
 pub struct NativeSession {
     prepared: PreparedSource,
     database: LineDatabase,
@@ -42,6 +50,15 @@ pub struct NativeSession {
 impl NativeSession {
     pub fn open(source: &Path, work_dir: &Path) -> Result<Self> {
         Self::open_reporting(source, work_dir, &mut std::io::sink())
+    }
+
+    pub fn ready_info(&self) -> Result<Value> {
+        Ok(json!({
+            "event": "ready",
+            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
+            "source": self.prepared.report,
+            "readOnly": self.database.is_read_only()?,
+        }))
     }
 
     /// Preparation can copy multi-gigabyte databases out of an archive, so the caller receives
@@ -61,6 +78,21 @@ impl NativeSession {
         output: &mut W,
     ) -> Result<Self> {
         Self::open_reporting_inner(source, work_dir, output, true)
+    }
+
+    pub fn open_streaming<F>(
+        source: &Path,
+        work_dir: &Path,
+        reuse_catalog: bool,
+        emit: F,
+    ) -> Result<Self>
+    where
+        F: FnMut(Value),
+    {
+        let mut output = StreamingEventWriter::new(emit);
+        let session = Self::open_reporting_inner(source, work_dir, &mut output, reuse_catalog)?;
+        output.finish()?;
+        Ok(session)
     }
 
     fn open_reporting_inner<W: Write>(
@@ -707,6 +739,130 @@ pub fn serve<R: BufRead, W: Write>(
         }
     }
     Ok(())
+}
+
+/// Calls the native protocol in-process for lightweight shells such as Tauri.
+///
+/// This preserves the same bounded parameter parsing and operation behavior as the JSON sidecar
+/// without spawning another copy of the Rust executable. Progress records written by the existing
+/// handlers are returned as structured events for the shell to forward to its frontend.
+pub fn invoke(
+    session: &mut NativeSession,
+    method: impl Into<String>,
+    params: Value,
+) -> Result<InProcessResponse> {
+    let mut events = Vec::new();
+    let result = invoke_streaming(session, method, params, None, |event| events.push(event))?;
+    Ok(InProcessResponse { result, events })
+}
+
+/// Calls the native protocol in-process and delivers progress records as soon as handlers flush
+/// them. `job_id` is included in progress records and active-job bookkeeping when supplied.
+pub fn invoke_streaming<F>(
+    session: &mut NativeSession,
+    method: impl Into<String>,
+    params: Value,
+    job_id: Option<String>,
+    emit: F,
+) -> Result<Value>
+where
+    F: FnMut(Value),
+{
+    invoke_streaming_cancellable(
+        session,
+        method,
+        params,
+        job_id,
+        CancellationToken::new(),
+        emit,
+    )
+}
+
+/// Streaming in-process invocation with cooperative cancellation. Long-running core loops call
+/// the scoped cancellation probe and unwind through normal `Result` errors, allowing transactions
+/// and partial-output guards to roll back cleanly.
+pub fn invoke_streaming_cancellable<F>(
+    session: &mut NativeSession,
+    method: impl Into<String>,
+    params: Value,
+    job_id: Option<String>,
+    cancellation: CancellationToken,
+    emit: F,
+) -> Result<Value>
+where
+    F: FnMut(Value),
+{
+    let _scope = CancellationScope::enter(cancellation);
+    check_cancelled()?;
+    let request = Request {
+        id: "in-process".to_string(),
+        job_id,
+        method: method.into(),
+        params,
+    };
+    let mut output = StreamingEventWriter::new(emit);
+    let result = handle_request(session, &request, &mut output)?;
+    check_cancelled()?;
+    output.finish()?;
+    Ok(result)
+}
+
+struct StreamingEventWriter<F> {
+    pending: Vec<u8>,
+    emit: F,
+}
+
+impl<F> StreamingEventWriter<F>
+where
+    F: FnMut(Value),
+{
+    fn new(emit: F) -> Self {
+        Self {
+            pending: Vec::new(),
+            emit,
+        }
+    }
+
+    fn emit_complete_lines(&mut self) -> std::io::Result<()> {
+        while let Some(newline) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let mut line = self.pending.drain(..=newline).collect::<Vec<_>>();
+            line.pop();
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let event = serde_json::from_slice(&line).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("native operation emitted an invalid progress event: {error}"),
+                )
+            })?;
+            (self.emit)(event);
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.emit_complete_lines()?;
+        if !self.pending.iter().all(u8::is_ascii_whitespace) {
+            anyhow::bail!("native operation emitted an unterminated progress event");
+        }
+        Ok(())
+    }
+}
+
+impl<F> Write for StreamingEventWriter<F>
+where
+    F: FnMut(Value),
+{
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.pending.extend_from_slice(buffer);
+        self.emit_complete_lines()?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.emit_complete_lines()
+    }
 }
 
 fn handle_request<W: Write>(
@@ -1939,6 +2095,7 @@ fn write_error<W: Write>(
 }
 
 fn write_json_line<W: Write>(output: &mut W, value: &impl Serialize) -> Result<()> {
+    check_cancelled()?;
     serde_json::to_writer(&mut *output, value)?;
     output.write_all(b"\n")?;
     output.flush()?;

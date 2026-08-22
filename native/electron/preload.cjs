@@ -17,6 +17,20 @@ const eventNames = new Set([
 ]);
 
 contextBridge.exposeInMainWorld("lineNativeBridge", Object.freeze({
+  localCleanupStatus() {
+    return ipcRenderer.invoke("line-native:local-cleanup-status");
+  },
+  scanLocalCleanup() {
+    return ipcRenderer.invoke("line-native:local-cleanup-scan");
+  },
+  deleteLocalSelection(token, itemIds) {
+    if (typeof token !== "string" || !token || !Array.isArray(itemIds) ||
+        itemIds.length < 1 || itemIds.length > 100000 ||
+        itemIds.some((id) => typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id))) {
+      return Promise.reject(new TypeError("Invalid local cleanup selection."));
+    }
+    return ipcRenderer.invoke("line-native:local-cleanup-delete", token, itemIds);
+  },
   listSessions() {
     return ipcRenderer.invoke("line-native:list-sessions");
   },

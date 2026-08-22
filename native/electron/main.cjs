@@ -24,6 +24,14 @@ const {
 } = require("./session-cache.cjs");
 const { SidecarClient } = require("./sidecar-client.cjs");
 const { findAvailableUpdate } = require("./update-checker.cjs");
+const {
+  LocalCleanupManager,
+  discoverLineProfile,
+  ensureLineClosed,
+  listLineProcesses,
+  localCleanupCapabilities,
+  requestLineQuit
+} = require("./local-cleanup.cjs");
 
 app.setName("LINE Cheater");
 
@@ -102,6 +110,7 @@ let pendingCandidateFinalization = null;
 let updateCheckStarted = false;
 let closeConfirmationOpen = false;
 let closeConfirmed = false;
+let localCleanupManager = null;
 const outputTokens = new Map();
 const exportOutputTokens = new Map();
 const conversationOutputTokens = new Map();
@@ -328,6 +337,48 @@ function cleanCancelledOperation(operation) {
 }
 
 async function registerIpc() {
+  ipcMain.handle("line-native:local-cleanup-status", async (event) => {
+    assertTrustedSender(event);
+    const profile = discoverLineProfile({ platform: process.platform });
+    const running = await listLineProcesses(process.platform);
+    return {
+      supported: ["darwin", "win32"].includes(process.platform),
+      platform: process.platform,
+      profileFound: Boolean(profile),
+      profilePath: profile ? profile.displayPath : "",
+      lineRunning: running.length > 0,
+      capabilities: localCleanupCapabilities()
+    };
+  });
+
+  ipcMain.handle("line-native:local-cleanup-scan", async (event) => {
+    assertTrustedSender(event);
+    localCleanupManager = createLocalCleanupManager();
+    return localCleanupManager.scan();
+  });
+
+  ipcMain.handle("line-native:local-cleanup-delete", async (event, token, itemIds) => {
+    assertTrustedSender(event);
+    if (!localCleanupManager) throw new Error("請先重新掃描本機 LINE 資料。");
+    if (typeof token !== "string" || !token || !Array.isArray(itemIds) ||
+        itemIds.length < 1 || itemIds.length > 100000 ||
+        itemIds.some((id) => typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id))) {
+      throw new TypeError("Invalid local cleanup selection.");
+    }
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      title: "確認將本機 LINE 快取移到垃圾桶",
+      message: `確定處理選取的 ${itemIds.length} 個本機檔案嗎？`,
+      detail: "這只會清除這台電腦的可重建快取，不會刪除 LINE 雲端、手機或聊天對象的副本；LINE 之後可能重新下載。檔案會移到系統垃圾桶。",
+      buttons: ["取消", "了解限制並移到垃圾桶"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    });
+    if (response !== 1) return null;
+    return localCleanupManager.deleteSelection(token, itemIds);
+  });
+
   ipcMain.handle("line-native:list-sessions", (event) => {
     assertTrustedSender(event);
     return listSessionCaches(
@@ -655,6 +706,54 @@ async function registerIpc() {
   });
 }
 
+function createLocalCleanupManager() {
+  const profile = discoverLineProfile({ platform: process.platform });
+  if (!profile) throw new Error("找不到這台電腦的 LINE 桌面版資料；請先安裝並登入 LINE。");
+  return new LocalCleanupManager({
+    platform: process.platform,
+    profile,
+    listProcesses: () => listLineProcesses(process.platform),
+    trashItem: (target) => shell.trashItem(target)
+  });
+}
+
+async function requireLineClosedAtStartup() {
+  if (!["darwin", "win32"].includes(process.platform)) return true;
+  while (true) {
+    try {
+      return await ensureLineClosed({
+        platform: process.platform,
+        listProcesses: () => listLineProcesses(process.platform),
+        requestQuit: () => requestLineQuit(process.platform),
+        confirmQuit: async () => {
+          const { response } = await dialog.showMessageBox({
+            type: "warning",
+            title: "必須先關閉 LINE",
+            message: "LINE Cheater 啟動前必須完全關閉 LINE。",
+            detail: "這能避免 LINE 正在寫入資料庫或快取時發生不一致。LINE Cheater 會要求 LINE 正常退出，並在確認程序停止後才繼續。",
+            buttons: ["關閉 LINE 並繼續", "退出 LINE Cheater"],
+            defaultId: 0,
+            cancelId: 1,
+            noLink: true
+          });
+          return response === 0;
+        }
+      });
+    } catch (error) {
+      const { response } = await dialog.showMessageBox({
+        type: "error",
+        title: "LINE 尚未關閉",
+        message: error.message,
+        buttons: ["重試", "退出 LINE Cheater"],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true
+      });
+      if (response !== 0) return false;
+    }
+  }
+}
+
 function createWindow() {
   const windowIcon = process.platform === "win32"
     ? path.join(__dirname, "assets", "icon.ico")
@@ -709,7 +808,7 @@ function createWindow() {
         });
         if (response !== 1 || windowToClose.isDestroyed()) return;
         closeConfirmed = true;
-        windowToClose.close();
+        app.quit();
       } catch (error) {
         console.warn(`Unable to confirm main-window close: ${error.message}`);
       } finally {
@@ -728,6 +827,10 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (!await requireLineClosedAtStartup()) {
+    app.quit();
+    return;
+  }
   protocol.handle("line-cheater", async (request) => {
     const url = new URL(request.url);
     if (url.host !== "app") {

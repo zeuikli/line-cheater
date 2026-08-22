@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs::{self, File, FileTimes, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 #[cfg(target_vendor = "apple")]
-use std::os::macos::fs::FileTimesExt;
+use std::os::darwin::fs::FileTimesExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::sync_channel;
@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::cancel::check_cancelled;
 use crate::conversation::attachment_entry_name;
 use crate::database::{LineDatabase, LineSquareDatabase, OrphanMessage, UnifiedGroupDatabase};
 use crate::model::{
@@ -638,6 +639,7 @@ impl Catalog {
     where
         F: FnMut(CatalogScanProgress),
     {
+        check_cancelled()?;
         let source = source
             .canonicalize()
             .with_context(|| format!("source does not exist: {}", source.display()))?;
@@ -712,6 +714,7 @@ impl Catalog {
                     .follow_links(false)
                     .sort_by_file_name()
                 {
+                    check_cancelled()?;
                     let entry = match entry {
                         Ok(entry) => entry,
                         Err(error) => {
@@ -765,6 +768,7 @@ impl Catalog {
                 let workers = system_performance_profile()
                     .archive_workers_for(fs::metadata(&source)?.len(), entry_count);
                 scan_archive_records_parallel(&source, entry_count, workers, |record| {
+                    check_cancelled()?;
                     batch.push(record);
                     update_progress(&mut progress, batch.last().expect("record exists"));
                     if batch.len() == CATALOG_BATCH_SIZE {
@@ -797,6 +801,7 @@ impl Catalog {
             }
         }
         if !batch.is_empty() {
+            check_cancelled()?;
             let last_path = batch.last().expect("record exists").path.clone();
             self.upsert_batch(scan_id, &mut batch)?;
             self.set_meta("scan_last_path", &last_path)?;
@@ -1165,6 +1170,7 @@ impl Catalog {
     where
         F: FnMut(ExportProgress),
     {
+        check_cancelled()?;
         if source_kind == SourceKind::Sqlite {
             bail!("direct Line.sqlite sources do not contain exportable attachment files");
         }
@@ -1243,6 +1249,7 @@ impl Catalog {
         };
         let result = match result {
             Ok(()) => {
+                check_cancelled()?;
                 fs::rename(&partial, &output).with_context(|| {
                     format!("failed to finalize export directory: {}", output.display())
                 })?;
@@ -1401,6 +1408,7 @@ impl Catalog {
         W: Write + Seek,
         F: FnMut(ExportProgress),
     {
+        check_cancelled()?;
         if source_kind == SourceKind::Sqlite {
             return Ok(ExportProgress::default());
         }
@@ -1459,6 +1467,7 @@ impl Catalog {
         match source_kind {
             SourceKind::Directory => {
                 for row in rows {
+                    check_cancelled()?;
                     let item = row?;
                     let candidate = source.join(&item.path).canonicalize().with_context(|| {
                         format!("attachment does not exist in source: {}", item.path)
@@ -1491,6 +1500,7 @@ impl Catalog {
             SourceKind::ImazingArchive => {
                 let mut archive = ZipArchive::new(File::open(&source)?)?;
                 for row in rows {
+                    check_cancelled()?;
                     let item = row?;
                     let mut entry = archive.by_name(&item.path).with_context(|| {
                         format!("attachment is missing from archive: {}", item.path)
@@ -1818,6 +1828,7 @@ impl Catalog {
         R: Read,
         F: FnMut(ExportProgress),
     {
+        check_cancelled()?;
         let mut header = [0_u8; 16];
         let mut header_len = 0_usize;
         let header_target =
@@ -1857,6 +1868,7 @@ impl Catalog {
         digest.update(&header[..header_len]);
         let mut buffer = [0_u8; EXPORT_BUFFER_BYTES];
         while copied < item.bytes {
+            check_cancelled()?;
             let remaining = item.bytes.saturating_sub(copied);
             let target = remaining.min(buffer.len() as u64) as usize;
             let read = reader.read(&mut buffer[..target])?;
@@ -1896,6 +1908,7 @@ impl Catalog {
             apply_sent_file_times(writer.get_ref(), sent_ms);
         }
         drop(writer);
+        check_cancelled()?;
         fs::rename(&temporary, &destination)?;
         accumulator.progress.processed_files =
             accumulator.progress.processed_files.saturating_add(1);
@@ -2020,6 +2033,7 @@ impl Catalog {
     where
         F: FnMut(CatalogContextProgress),
     {
+        check_cancelled()?;
         let total_files = self.connection.query_row(
             "SELECT COUNT(*) FROM files WHERE attachment_kind IS NOT NULL",
             [],
@@ -2057,6 +2071,7 @@ impl Catalog {
         )?;
         let mut after_id = 0_i64;
         loop {
+            check_cancelled()?;
             let records = {
                 let mut statement = self.connection.prepare(
                     "
@@ -2125,6 +2140,7 @@ impl Catalog {
                     ",
                 )?;
                 for (id, message_id, chat_hint) in &records {
+                    check_cancelled()?;
                     let candidates = contexts.get(message_id).map(Vec::as_slice).unwrap_or(&[]);
                     let exact = candidates
                         .iter()
@@ -2184,6 +2200,7 @@ impl Catalog {
             on_progress(progress);
         }
         self.repair_image_contexts_from_unique_counterparts_reporting(|repair| {
+            check_cancelled()?;
             progress.repaired_files = repair.processed_records;
             progress.repair_total_files = repair.total_records;
             on_progress(progress);
@@ -4568,6 +4585,7 @@ impl Catalog {
     where
         F: FnMut(DuplicateHashProgress) -> Result<()>,
     {
+        check_cancelled()?;
         if kind == SourceKind::Sqlite {
             bail!("a direct Line.sqlite source has no attachment files");
         }
@@ -4632,6 +4650,7 @@ impl Catalog {
             processed_bytes: 0,
         };
         while let Some(row) = rows.next()? {
+            check_cancelled()?;
             let path: String = row.get(0)?;
             let bytes = row.get::<_, i64>(1)?.max(0) as u64;
             let modified_ns: i64 = row.get(2)?;
@@ -5363,6 +5382,7 @@ where
     W: Write + Seek,
     F: FnMut(ExportProgress),
 {
+    check_cancelled()?;
     let entry_name = attachment_entry_name(&item.path);
     writer.start_file(
         entry_name,
@@ -5372,6 +5392,7 @@ where
     let mut copied = 0_u64;
     let mut buffer = [0_u8; EXPORT_BUFFER_BYTES];
     while copied < item.bytes {
+        check_cancelled()?;
         let remaining = item.bytes.saturating_sub(copied);
         let target = remaining.min(buffer.len() as u64) as usize;
         let read = reader.read(&mut buffer[..target])?;
@@ -5609,6 +5630,7 @@ fn hash_reader(mut reader: impl Read) -> Result<String> {
     let mut digest = Sha256::new();
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
     loop {
+        check_cancelled()?;
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;

@@ -3,7 +3,7 @@
 (function () {
   "use strict";
 
-  var SQL_WASM_CDN = "https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/";
+  var SQL_WASM_CDN = "vendor/sql.js/";
   var MESSAGE_PAGE_SIZE = 180;
   var CHAT_ITEM_FALLBACK_HEIGHT = 65;
   var ATTACHMENT_CLEANUP_PAGE_SIZE = 24;

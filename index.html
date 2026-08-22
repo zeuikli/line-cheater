@@ -4,6 +4,11 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="在你的裝置本機閱讀、搜尋、匯出與整理 iOS LINE 聊天備份，提供桌面版與網頁版。">
+    <meta name="theme-color" content="#0f766e">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="web-icons/icon-192.png">
     <title>LINE Cheater</title>
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://zeuikli.github.io/line-cheater/">
@@ -153,6 +158,11 @@
       <section class="privacy-note" aria-label="資料隱私">
         <strong>資料留在你的裝置</strong>
         <span>LINE 備份檔案可透過 iMazing 備份軟體取得；所有解析都在目前瀏覽器分頁內進行，關閉或重新整理頁面後資料不會被保留。連結預覽縮圖顯示時，瀏覽器可能向 LINE CDN 或縮圖來源讀取圖片。</span>
+      </section>
+
+      <section class="mobile-capability-note" aria-label="手機版使用限制">
+        <strong>手機可加入主畫面使用</strong>
+        <span>先把 <code>Line.sqlite</code> 或索引存到手機的「檔案」App，再從下方選取。手機版無法直接讀取 LINE App 的私有資料，也不能關閉 LINE 或刪除 LINE 正在使用的檔案；直接掃描與清理請使用桌面版。</span>
       </section>
 
       <section class="panel source-panel">
@@ -498,7 +508,8 @@ python3 cli/line_migrator.py verify-index \
     </footer>
 
     <!-- sql.js is used only for local, read-only SQLite parsing. -->
-    <script src="https://cdn.jsdelivr.net/npm/sql.js@1.12.0/dist/sql-wasm.js"></script>
+    <script src="vendor/sql.js/sql-wasm.js"></script>
     <script src="app.js"></script>
+    <script src="pwa.js"></script>
   </body>
 </html>

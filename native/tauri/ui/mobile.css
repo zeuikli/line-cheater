@@ -1,0 +1,84 @@
+:root {
+  --mobile-safe-top: env(safe-area-inset-top, 0px);
+  --mobile-safe-right: env(safe-area-inset-right, 0px);
+  --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-safe-left: env(safe-area-inset-left, 0px);
+}
+
+body {
+  min-width: 0;
+  padding-top: var(--mobile-safe-top);
+  padding-right: var(--mobile-safe-right);
+  padding-bottom: var(--mobile-safe-bottom);
+  padding-left: var(--mobile-safe-left);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button,
+input,
+select,
+.source-option {
+  min-height: 44px;
+}
+
+@media (max-width: 640px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .welcome-screen {
+    place-items: start stretch;
+    padding: 18px 14px calc(18px + var(--mobile-safe-bottom));
+  }
+
+  .welcome-brand {
+    gap: 11px;
+    margin-bottom: 15px;
+  }
+
+  .welcome-brand h1 {
+    font-size: 1.55rem;
+  }
+
+  .welcome-card {
+    padding: 20px 16px;
+  }
+
+  .welcome-card > h2 {
+    font-size: 1.3rem;
+  }
+
+  .welcome-copy {
+    margin-bottom: 16px;
+  }
+
+  .app-shell,
+  .welcome-card,
+  .workspace-shell,
+  .local-cleanup-shell {
+    width: 100%;
+    max-width: none;
+  }
+
+  .welcome-card,
+  .local-cleanup-panel,
+  .content-panel {
+    border-radius: 16px;
+  }
+
+  .source-options,
+  .local-cleanup-toolbar,
+  .workspace-header,
+  .topbar {
+    grid-template-columns: minmax(0, 1fr);
+    flex-wrap: wrap;
+  }
+
+  .local-cleanup-item-main,
+  .local-cleanup-item-main small {
+    overflow-wrap: anywhere;
+  }
+}
