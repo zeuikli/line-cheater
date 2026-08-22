@@ -34,6 +34,8 @@ LINE Cheater 是用來瀏覽、搜尋、整理與瘦身 iOS LINE App Container �
 
 桌面版支援：
 
+- macOS／Windows 本機 LINE 快取模式：啟動時先要求 LINE 完全退出，只掃描固定 allowlist 內的可重建快取，刪除前再次驗證程序、路徑與檔案指紋，並移到系統垃圾桶而非永久刪除
+- 本機快取模式不會修改加密的桌面聊天 `.edb`、帳號設定或未知檔案；也不會宣稱已刪除 LINE 雲端、手機或聊天對象的副本。LINE 沒有提供 consumer desktop chat 的官方 authenticated deletion API，因此遠端刪除選項保持停用，快取日後可能重新下載
 - 聊天室與訊息瀏覽、搜尋、圖片預覽
 - 自動列出完整且來源未變更的分析 Session，同時顯示原始備份與 Session 資料夾路徑，並直接重用附件及 SQLite 關聯索引
 - 附件分類、篩選、原圖／縮圖個別標記；聊天室會顯示實際保留的縮圖數量，縮圖保留與批次刪除同時啟用時會明確顯示為刪除其他附件；分類批次刪除允許單一聊天室退出而不影響同分類的其他聊天室
@@ -56,7 +58,7 @@ LINE Cheater 是用來瀏覽、搜尋、整理與瘦身 iOS LINE App Container �
 
 ## 網頁版
 
-網頁版適合快速查看與一般大小的備份，不需安裝。
+網頁版適合快速查看與一般大小的備份，不需安裝；它也是手機上最輕量、不需商店帳號的使用方式。SQL 解析核心會隨網站一併快取，不依賴第三方 CDN。
 
 1. 開啟 <https://line-cheater.gginin.de>。
 2. 選擇來源：
@@ -64,6 +66,14 @@ LINE Cheater 是用來瀏覽、搜尋、整理與瘦身 iOS LINE App Container �
    - **只讀訊息**：只選取 `Messages/Line.sqlite`。
    - **大型備份索引**：載入 Python CLI 產生的 `line-reader-index`。
 3. 瀏覽、搜尋或匯出 HTML、JSON 與附件清單。
+
+在手機上可將網頁版加入主畫面：
+
+- iPhone／iPad：用 Safari 開啟後，點「分享」→「加入主畫面」。
+- Android：用 Chrome 開啟後，點選單→「安裝應用程式」或「加到主畫面」。
+- 先從電腦把 `Line.sqlite` 或 CLI 索引傳到手機的「檔案」或下載資料夾，再由網頁版選取。
+
+手機的沙盒不允許網頁版或第三方 App 直接讀取 LINE 的私有容器，因此手機版能做查看、搜尋與匯出，不能自動關閉 LINE、掃描 LINE 目錄或直接刪除 LINE 正在使用的檔案。這些動作只在桌面版提供。
 
 `Line.sqlite` 的典型位置：
 
@@ -131,7 +141,7 @@ python3 cli/line_migrator.py verify-index \
 
 ### Rust CLI
 
-Rust CLI 是 Electron 桌面版使用的 sidecar，也可直接建置與執行：
+Rust CLI 是 Electron 過渡版使用的 sidecar；Tauri 輕量版會直接連結同一個 Rust crate，兩者也可直接建置與執行：
 
 ```bash
 cargo build -p line-cheater
@@ -147,6 +157,45 @@ cargo build -p line-cheater
 - 建議保留原始 `.imazingapp`，第一次先在測試裝置驗證還原結果。
 
 ## 開發桌面版
+
+Tauri 2 是新的輕量共用殼層；Electron 暫時保留作為功能與發行回退：
+
+```bash
+npm --prefix native/tauri ci
+npm --prefix native/tauri test
+npm --prefix native/tauri run dev
+```
+
+macOS Tauri 封裝：
+
+```bash
+npm --prefix native/tauri run tauri build -- --bundles app,dmg
+```
+
+iOS 只接受系統檔案選擇器授權的備份，不會讀取 LINE 私有容器：
+
+```bash
+npm --prefix native/tauri run mobile:ios:init
+npm --prefix native/tauri run tauri ios build -- --debug --target aarch64-sim --no-sign --ci
+# 沒有 Apple Distribution：產生可由個人 Apple ID 簽署側載的 Release IPA
+npm --prefix native/tauri run mobile:ios:unsigned
+# Xcode 已登入 Apple Account 時，指定實機 Identifier 後直接安裝
+npm --prefix native/tauri run mobile:ios:device -- <DEVICE_IDENTIFIER>
+```
+
+未簽署 IPA 的驗證、Xcode Personal Team 與個人側載步驟見
+[沒有 Apple Distribution 時的 iOS 使用方式](docs/ios-without-distribution.md)。
+
+Android 需先依 Tauri 文件安裝 Android SDK、NDK、Platform Tools 與四個 Rust Android targets：
+
+```bash
+npm --prefix native/tauri run mobile:android:init
+npm --prefix native/tauri run tauri android build -- --debug --apk
+```
+
+手機商店正式發佈仍需 Apple Developer／Google Play 帳號、簽署材料、商店資訊與上傳授權；目前的驗證狀態見 [手機發行狀態](docs/mobile-release-status.md)。
+
+Electron 回退版：
 
 ```bash
 cargo build -p line-cheater
@@ -177,5 +226,6 @@ macOS Release 會分別建立 arm64／x64 DMG，執行 Developer ID 簽署、App
 - [Python CLI](CLI.md)
 - [原生核心架構與驗證紀錄](NATIVE.md)
 - [Electron 開發、封裝與安全邊界](native/electron/README.md)
+- [沒有 Apple Distribution 時的 iOS 使用方式](docs/ios-without-distribution.md)
 - [Hiraku Dev：LINE 瘦身說明](https://hiraku.dev/2025/09/7802/)
 - [iMazing：App Data 備份與還原](https://imazing.com/guides/how-to-export-backup-and-transfer-ios-apps-data-and-settings)

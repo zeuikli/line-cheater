@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 use zip::ZipArchive;
 
+use crate::cancel::check_cancelled;
+
 const STAGE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const STAGE_PROGRESS_STEP_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -141,6 +143,7 @@ pub fn prepare_source_reporting<F>(
 where
     F: FnMut(&PrepareProgress),
 {
+    check_cancelled()?;
     if is_imazing_archive(source) && source.is_file() {
         return prepare_archive_source(source, work_dir, &mut on_progress);
     }
@@ -186,6 +189,7 @@ fn prepare_archive_source<F>(
 where
     F: FnMut(&PrepareProgress),
 {
+    check_cancelled()?;
     let source = source
         .canonicalize()
         .with_context(|| format!("source does not exist: {}", source.display()))?;
@@ -426,13 +430,14 @@ where
     let mut staged_square_database = None;
     let mut staged_unified_group_database = None;
     for entry in planned {
+        check_cancelled()?;
         if !staged_file_is_current(&entry.destination, entry.bytes) {
             let temporary = staging_partial_path(&entry.destination);
             let display = entry
                 .destination
                 .file_name()
                 .map(|value| value.to_string_lossy().into_owned());
-            {
+            let staging_result = (|| -> Result<()> {
                 let mut source = archive.by_index(entry.index)?;
                 let mut output = BufWriter::new(
                     File::create(&temporary)
@@ -452,6 +457,11 @@ where
                     }
                 })?;
                 output.flush()?;
+                Ok(())
+            })();
+            if let Err(error) = staging_result {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
             }
             fs::rename(&temporary, &entry.destination)?;
             on_progress(&PrepareProgress {
@@ -496,6 +506,7 @@ fn copy_with_progress<R: Read, W: Write, F: FnMut(u64)>(
     let mut buffer = vec![0_u8; STAGE_CHUNK_BYTES];
     let mut copied = 0_u64;
     loop {
+        check_cancelled()?;
         let read = source.read(&mut buffer)?;
         if read == 0 {
             return Ok(copied);

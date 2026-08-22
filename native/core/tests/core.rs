@@ -5,13 +5,15 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::anyhow;
 use line_backup_native::{
-    AttachmentKind, CandidateOptions, Catalog, Chat, ChatCursor, ExportOptions, ExportScope,
-    LineDatabase, LineSquareDatabase, MessageCursor, NativeSession, PreparePhase, SourceKind,
-    UnifiedGroupDatabase, build_candidate, build_candidate_with_options, inspect_source,
-    line_square_rebuild_required, prepare_source, prepare_source_reporting, serve,
+    AttachmentKind, CancellationToken, CandidateOptions, Catalog, Chat, ChatCursor, ExportOptions,
+    ExportScope, LineDatabase, LineSquareDatabase, MessageCursor, NativeSession, PreparePhase,
+    SourceKind, UnifiedGroupDatabase, build_candidate, build_candidate_with_options,
+    inspect_source, invoke, invoke_streaming_cancellable, line_square_rebuild_required,
+    prepare_source, prepare_source_reporting, serve,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
+use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 
 fn exported_paths(directory: &Path) -> Vec<String> {
@@ -2244,6 +2246,44 @@ fn reports_archive_staging_progress_and_reuses_staged_databases() {
     assert_ne!(changed.staging_directory.unwrap(), staging_directory);
 }
 
+#[test]
+fn cancelling_archive_staging_removes_partial_database_copy() {
+    let temporary = TempDir::new().unwrap();
+    let archive_path = temporary.path().join("large-LINE.imazingapp");
+    let database = "Container/AppGroups/group.com.linecorp.line/Library/Application Support/PrivateStore/P_test/Messages/Line.sqlite";
+    let mut archive = zip::ZipWriter::new(fs::File::create(&archive_path).unwrap());
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    archive.start_file(database, options).unwrap();
+    archive.write_all(&vec![0_u8; 20 * 1024 * 1024]).unwrap();
+    archive.finish().unwrap();
+
+    let work = temporary.path().join("cancelled-staging-work");
+    let cancellation = CancellationToken::new();
+    let callback_token = cancellation.clone();
+    let result = cancellation.run(|| {
+        prepare_source_reporting(&archive_path, &work, |progress| {
+            if progress.phase == PreparePhase::StagingDatabases
+                && progress.staged_bytes >= 16 * 1024 * 1024
+            {
+                callback_token.cancel();
+            }
+        })
+    });
+
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("operation_cancelled")
+    );
+    assert!(
+        !WalkDir::new(&work)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
+    );
+}
+
 fn write_single_database_archive(
     archive_path: &Path,
     source: &Path,
@@ -2570,6 +2610,49 @@ fn exports_selected_images_from_directory_and_archive_without_overwriting_source
             .any(|name| name.ends_with("12345678.thumb"))
     );
     assert!(source.join(&database).is_file());
+}
+
+#[test]
+fn cancellable_export_stops_and_removes_partial_output() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    let work = temporary.path().join("cancellable-work");
+    let mut session = NativeSession::open(&source, &work).unwrap();
+    invoke(&mut session, "scanCatalog", serde_json::json!({})).unwrap();
+
+    let attachment_path = "Container/AppGroups/group.com.linecorp.line/Library/Application Support/PrivateStore/P_test/Message Attachments/u1/12345678.jpg";
+    let output = temporary.path().join("cancelled-export");
+    let partial = PathBuf::from(format!("{}.partial", output.display()));
+    let cancellation = CancellationToken::new();
+    let callback_token = cancellation.clone();
+    let mut saw_export_progress = false;
+    let result = invoke_streaming_cancellable(
+        &mut session,
+        "exportAttachments",
+        serde_json::json!({
+            "output": output,
+            "paths": [attachment_path],
+            "includeThumbnails": false
+        }),
+        Some("cancel-export-job".to_string()),
+        cancellation,
+        |event| {
+            if event["event"] == "exportProgress" {
+                saw_export_progress = true;
+                callback_token.cancel();
+            }
+        },
+    );
+
+    assert!(saw_export_progress);
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("operation_cancelled")
+    );
+    assert!(!output.exists());
+    assert!(!partial.exists());
 }
 
 #[test]

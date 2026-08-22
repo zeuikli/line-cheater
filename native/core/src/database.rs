@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, Row, params};
 
+use crate::cancel::check_cancelled;
 use crate::model::{
     AttachmentContext, Chat, ChatCursor, ChatPage, MAX_PAGE_SIZE, Message, MessageCursor,
     MessagePage, checked_page_size,
@@ -141,6 +142,7 @@ impl Fts5MessageIndex {
         )?;
         let mut processed = 0_u64;
         line.for_each_searchable_message(|record| {
+            check_cancelled()?;
             insert_search_record(&mut insert, &record)?;
             processed += 1;
             on_progress(processed);
@@ -148,6 +150,7 @@ impl Fts5MessageIndex {
         })?;
         if let Some(square) = square {
             square.for_each_searchable_message(|record| {
+                check_cancelled()?;
                 insert_search_record(&mut insert, &record)?;
                 processed += 1;
                 on_progress(processed);

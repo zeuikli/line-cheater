@@ -207,12 +207,30 @@ function verifySignature(target, label) {
   }
 }
 
+function assertSingleArchitecture(target, label) {
+  const architectures = capture("/usr/bin/lipo", ["-archs", target])
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (architectures.length !== 1 || architectures[0] !== architecture) {
+    throw new Error(
+      `${label} architecture is ${architectures.join(", ") || "unknown"}; ` +
+      `expected exactly ${architecture}.`
+    );
+  }
+}
+
 if (!fs.existsSync(electronApp)) {
   throw new Error("Electron.app is missing. Run npm install in native/electron first.");
 }
 if (!fs.existsSync(releaseBinary)) {
   throw new Error("Release sidecar is missing. Run the package:mac npm script.");
 }
+assertSingleArchitecture(
+  path.join(electronApp, "Contents", "MacOS", "Electron"),
+  "Electron runtime"
+);
+assertSingleArchitecture(releaseBinary, "Rust sidecar");
 if (!fs.existsSync(electronEntitlements)) {
   throw new Error("Electron entitlements are missing.");
 }
@@ -257,6 +275,7 @@ for (const filename of [
   "preload.cjs",
   "renderer.html",
   "renderer.js",
+  "local-cleanup.cjs",
   "session-cache.cjs",
   "sidecar-client.cjs",
   "styles.css",

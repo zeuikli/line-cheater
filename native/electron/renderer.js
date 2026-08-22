@@ -98,6 +98,11 @@ let cleanupAlbumSession = null;
 let advancedMode = false;
 let advancedReport = null;
 let advancedLoading = false;
+let localCleanupInventory = null;
+let localCleanupBusy = false;
+let localCleanupPage = 1;
+const localCleanupSelected = new Set();
+const LOCAL_CLEANUP_PAGE_SIZE = 100;
 const CLEANUP_ALBUM_PAGE_SIZE = 24;
 const CLEANUP_ALBUM_MAX_PAGES = 3;
 const cleanupState = {
@@ -114,6 +119,20 @@ const elements = {
   appShell: document.querySelector("#app-shell"),
   welcomeScreen: document.querySelector("#welcome-screen"),
   workspaceScreen: document.querySelector("#workspace-screen"),
+  localCleanupScreen: document.querySelector("#local-cleanup-screen"),
+  localCleanupStart: document.querySelector("#local-cleanup-start"),
+  localCleanupBack: document.querySelector("#local-cleanup-back"),
+  localCleanupProfile: document.querySelector("#local-cleanup-profile"),
+  localCloudReason: document.querySelector("#local-cloud-reason"),
+  localCleanupSummary: document.querySelector("#local-cleanup-summary"),
+  localCleanupStatus: document.querySelector("#local-cleanup-status"),
+  localCleanupRefresh: document.querySelector("#local-cleanup-refresh"),
+  localCleanupSelectAll: document.querySelector("#local-cleanup-select-all"),
+  localCleanupDelete: document.querySelector("#local-cleanup-delete"),
+  localCleanupItems: document.querySelector("#local-cleanup-items"),
+  localCleanupPrevious: document.querySelector("#local-cleanup-previous"),
+  localCleanupNext: document.querySelector("#local-cleanup-next"),
+  localCleanupPageInfo: document.querySelector("#local-cleanup-page-info"),
   enterWorkspace: document.querySelector("#enter-workspace"),
   changeSource: document.querySelector("#change-source"),
   refreshSessions: document.querySelector("#refresh-sessions"),
@@ -280,7 +299,15 @@ const categoryLabels = {
   community: "社群",
   unreferenced: "SQLite 未引用",
   unconfirmed: "無法確認",
-  no_attachments: "沒有附件的對話"
+  no_attachments: "沒有附件的對話",
+  stickers: "貼圖快取",
+  sticons: "表情貼快取",
+  "chat-effects": "聊天特效快取",
+  "chat-backgrounds": "聊天背景快取",
+  advertisements: "廣告快取",
+  resources: "資源快取",
+  sounds: "音效快取",
+  "media-cache": "媒體縮圖快取"
 };
 
 function categoryActionLabel(category) {
@@ -4739,6 +4766,181 @@ async function buildCandidate() {
   }
 }
 
+function setLocalCleanupBusy(busy) {
+  localCleanupBusy = busy;
+  elements.localCleanupRefresh.disabled = busy;
+  elements.localCleanupBack.disabled = busy;
+  const pageCount = localCleanupInventory
+    ? Math.max(1, Math.ceil(localCleanupInventory.items.length / LOCAL_CLEANUP_PAGE_SIZE))
+    : 1;
+  elements.localCleanupPrevious.disabled = busy || localCleanupPage <= 1;
+  elements.localCleanupNext.disabled = busy || localCleanupPage >= pageCount;
+  updateLocalCleanupSelection();
+}
+
+function updateLocalCleanupSelection() {
+  const itemCount = localCleanupInventory ? localCleanupInventory.items.length : 0;
+  elements.localCleanupDelete.disabled = localCleanupBusy || localCleanupSelected.size === 0;
+  elements.localCleanupSelectAll.disabled = localCleanupBusy || itemCount === 0;
+  elements.localCleanupSelectAll.textContent = itemCount > 0 && localCleanupSelected.size === itemCount
+    ? "取消全選"
+    : "全選";
+  if (localCleanupInventory && localCleanupSelected.size) {
+    const bytes = localCleanupInventory.items.reduce((total, item) =>
+      total + (localCleanupSelected.has(item.id) ? item.bytes : 0), 0);
+    elements.localCleanupStatus.textContent = `已選 ${localCleanupSelected.size.toLocaleString()} 個檔案，共 ${formatBytes(bytes)}。`;
+  }
+}
+
+function renderLocalCleanupInventory(inventory) {
+  localCleanupInventory = inventory;
+  localCleanupPage = 1;
+  localCleanupSelected.clear();
+  elements.localCleanupProfile.textContent = inventory.profilePath;
+  elements.localCloudReason.textContent = inventory.cloud.reason;
+  elements.localCleanupSummary.textContent =
+    `${inventory.totals.files.toLocaleString()} 個可重建快取 · ${formatBytes(inventory.totals.bytes)}`;
+  elements.localCleanupStatus.textContent = inventory.items.length
+    ? "請勾選要移到系統垃圾桶的檔案。"
+    : "沒有找到可安全清理的本機快取。";
+  renderLocalCleanupPage();
+}
+
+function renderLocalCleanupPage() {
+  const inventory = localCleanupInventory;
+  elements.localCleanupItems.replaceChildren();
+  if (!inventory) {
+    elements.localCleanupItems.append(emptyState("尚未掃描本機 LINE 快取。"));
+    return;
+  }
+  if (!inventory.items.length) {
+    elements.localCleanupItems.append(emptyState("沒有找到可安全清理的本機快取。"));
+    elements.localCleanupPrevious.disabled = true;
+    elements.localCleanupNext.disabled = true;
+    elements.localCleanupPageInfo.textContent = "第 1 頁";
+    updateLocalCleanupSelection();
+    return;
+  }
+  const pageCount = Math.max(1, Math.ceil(inventory.items.length / LOCAL_CLEANUP_PAGE_SIZE));
+  localCleanupPage = Math.min(Math.max(1, localCleanupPage), pageCount);
+  const pageItems = inventory.items.slice(
+    (localCleanupPage - 1) * LOCAL_CLEANUP_PAGE_SIZE,
+    localCleanupPage * LOCAL_CLEANUP_PAGE_SIZE
+  );
+  const fragment = document.createDocumentFragment();
+  for (const item of pageItems) {
+    const row = document.createElement("label");
+    row.className = "local-cleanup-item";
+    row.setAttribute("role", "listitem");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = localCleanupSelected.has(item.id);
+    checkbox.dataset.localItemId = item.id;
+    checkbox.dataset.localItemBytes = String(item.bytes);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) localCleanupSelected.add(item.id);
+      else localCleanupSelected.delete(item.id);
+      updateLocalCleanupSelection();
+    });
+    const content = document.createElement("span");
+    content.className = "local-cleanup-item-main";
+    const name = document.createElement("strong");
+    name.textContent = item.name;
+    const detail = document.createElement("small");
+    detail.textContent = `${categoryLabels[item.category] || item.category} · ${formatBytes(item.bytes)} · ${item.relativePath}`;
+    content.append(name, detail);
+    row.append(checkbox, content);
+    fragment.append(row);
+  }
+  elements.localCleanupItems.append(fragment);
+  elements.localCleanupPrevious.disabled = localCleanupBusy || localCleanupPage <= 1;
+  elements.localCleanupNext.disabled = localCleanupBusy || localCleanupPage >= pageCount;
+  elements.localCleanupPageInfo.textContent =
+    `第 ${localCleanupPage.toLocaleString()} / ${pageCount.toLocaleString()} 頁`;
+  updateLocalCleanupSelection();
+}
+
+async function scanLocalCleanup() {
+  if (localCleanupBusy) return;
+  setLocalCleanupBusy(true);
+  elements.localCleanupStatus.textContent = "正在唯讀掃描 LINE 本機快取…";
+  try {
+    renderLocalCleanupInventory(await bridge.scanLocalCleanup());
+  } catch (error) {
+    localCleanupInventory = null;
+    localCleanupSelected.clear();
+    elements.localCleanupSummary.textContent = "無法掃描";
+    elements.localCleanupStatus.textContent = error.message;
+    elements.localCleanupItems.replaceChildren(emptyState(error.message));
+  } finally {
+    setLocalCleanupBusy(false);
+  }
+}
+
+async function openLocalCleanup() {
+  if (localCleanupBusy) return;
+  elements.welcomeScreen.classList.add("hidden");
+  elements.workspaceScreen.classList.add("hidden");
+  elements.localCleanupScreen.classList.remove("hidden");
+  try {
+    const status = await bridge.localCleanupStatus();
+    if (!status.supported) throw new Error("本機清理目前只支援 macOS 與 Windows。");
+    if (!status.profileFound) throw new Error("找不到 LINE 桌面版資料；請先安裝並登入 LINE。");
+    if (status.lineRunning) throw new Error("LINE 仍在執行；請完全關閉後重新啟動 LINE Cheater。");
+    elements.localCleanupProfile.textContent = status.profilePath;
+    elements.localCloudReason.textContent = status.capabilities.cloudDeletion.reason;
+    await scanLocalCleanup();
+  } catch (error) {
+    elements.localCleanupSummary.textContent = "本機清理不可用";
+    elements.localCleanupStatus.textContent = error.message;
+    elements.localCleanupItems.replaceChildren(emptyState(error.message));
+  }
+}
+
+function closeLocalCleanup() {
+  if (localCleanupBusy) return;
+  localCleanupInventory = null;
+  localCleanupSelected.clear();
+  elements.localCleanupScreen.classList.add("hidden");
+  elements.welcomeScreen.classList.remove("hidden");
+}
+
+function toggleAllLocalItems() {
+  if (!localCleanupInventory) return;
+  if (localCleanupSelected.size === localCleanupInventory.items.length) {
+    localCleanupSelected.clear();
+  } else {
+    for (const item of localCleanupInventory.items) localCleanupSelected.add(item.id);
+  }
+  renderLocalCleanupPage();
+}
+
+async function deleteSelectedLocalItems() {
+  if (localCleanupBusy || !localCleanupInventory) return;
+  const itemIds = Array.from(localCleanupSelected);
+  if (!itemIds.length) return;
+  setLocalCleanupBusy(true);
+  elements.localCleanupStatus.textContent = "正在移到系統垃圾桶…";
+  try {
+    const result = await bridge.deleteLocalSelection(localCleanupInventory.token, itemIds);
+    if (!result) {
+      elements.localCleanupStatus.textContent = "已取消，沒有移動任何檔案。";
+      return;
+    }
+    const failureText = result.local.failures.length
+      ? `；${result.local.failures.length.toLocaleString()} 個失敗`
+      : "";
+    elements.localCleanupStatus.textContent =
+      `已將 ${result.local.deleted.toLocaleString()} 個檔案（${formatBytes(result.local.bytes)}）移到垃圾桶${failureText}。`;
+    setLocalCleanupBusy(false);
+    await scanLocalCleanup();
+  } catch (error) {
+    elements.localCleanupStatus.textContent = `本機清理失敗：${error.message}`;
+  } finally {
+    setLocalCleanupBusy(false);
+  }
+}
+
 function updateCleanupFilter() {
   cleanupState.kind = elements.cleanupKind.value;
   cleanupState.category = elements.cleanupCategory.value;
@@ -4757,6 +4959,19 @@ function updateCleanupFilter() {
 for (const button of document.querySelectorAll("[data-source]")) {
   button.addEventListener("click", () => void openSource(button.dataset.source));
 }
+elements.localCleanupStart.addEventListener("click", () => void openLocalCleanup());
+elements.localCleanupBack.addEventListener("click", closeLocalCleanup);
+elements.localCleanupRefresh.addEventListener("click", () => void scanLocalCleanup());
+elements.localCleanupSelectAll.addEventListener("click", toggleAllLocalItems);
+elements.localCleanupDelete.addEventListener("click", () => void deleteSelectedLocalItems());
+elements.localCleanupPrevious.addEventListener("click", () => {
+  localCleanupPage -= 1;
+  renderLocalCleanupPage();
+});
+elements.localCleanupNext.addEventListener("click", () => {
+  localCleanupPage += 1;
+  renderLocalCleanupPage();
+});
 elements.refreshSessions.addEventListener("click", () => void loadSavedSessions());
 elements.savedSessionList.addEventListener("click", (event) => {
   const deleteButton = event.target.closest("button[data-session-delete]");

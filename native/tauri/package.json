@@ -1,0 +1,22 @@
+{
+  "name": "line-cheater-tauri",
+  "version": "0.1.31",
+  "private": true,
+  "description": "Lightweight Tauri 2 shell for LINE Cheater desktop and mobile",
+  "scripts": {
+    "tauri": "tauri",
+    "build:ui": "node scripts/build-ui.cjs",
+    "test": "node --test architecture.test.cjs",
+    "dev": "npm run build:ui && tauri dev",
+    "build": "npm test && npm run build:ui && tauri build",
+    "mobile:ios:init": "tauri ios init",
+    "mobile:ios:dev": "npm run build:ui && tauri ios dev",
+    "mobile:ios:device": "node scripts/install-ios-device.cjs",
+    "mobile:ios:unsigned": "node scripts/build-ios-unsigned.cjs",
+    "mobile:android:init": "tauri android init",
+    "mobile:android:dev": "npm run build:ui && tauri android dev"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

@@ -1,0 +1,77 @@
+name: Verify Tauri mobile builds
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "native/core/**"
+      - "native/frontend/**"
+      - "native/tauri/**"
+      - ".github/workflows/tauri-mobile.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-simulator:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: native/tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - name: Install frontend and Apple dependencies
+        run: |
+          brew install cocoapods xcodegen
+          npm ci
+        working-directory: native/tauri
+      - name: Generate and build the unsigned iOS Simulator app
+        run: |
+          npm run tauri ios init -- --ci
+          npm run tauri ios build -- --debug --target aarch64-sim --no-sign --ci
+        working-directory: native/tauri
+      - uses: actions/upload-artifact@v6
+        with:
+          name: line-cheater-ios-simulator
+          if-no-files-found: error
+          path: native/tauri/src-tauri/gen/apple/build/arm64-sim/*.app
+
+  android-debug:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: native/tauri/package-lock.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK and Rust targets
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: native/tauri
+      - name: Generate and build unsigned Android APKs
+        run: |
+          npm run tauri android init -- --ci
+          npm run tauri android build -- --debug --apk
+        working-directory: native/tauri
+      - uses: actions/upload-artifact@v6
+        with:
+          name: line-cheater-android-debug
+          if-no-files-found: error
+          path: native/tauri/src-tauri/gen/android/app/build/outputs/apk/**/*.apk

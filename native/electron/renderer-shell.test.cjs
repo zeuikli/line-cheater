@@ -12,6 +12,7 @@ const styles = fs.readFileSync(path.join(root, "styles.css"), "utf8");
 const main = fs.readFileSync(path.join(root, "main.cjs"), "utf8");
 const sessionCache = fs.readFileSync(path.join(root, "session-cache.cjs"), "utf8");
 const updateChecker = fs.readFileSync(path.join(root, "update-checker.cjs"), "utf8");
+const localCleanup = fs.readFileSync(path.join(root, "local-cleanup.cjs"), "utf8");
 const preload = fs.readFileSync(path.join(root, "preload.cjs"), "utf8");
 const macPackager = fs.readFileSync(
   path.join(root, "scripts", "package-macos.cjs"),
@@ -39,6 +40,10 @@ const macWorkflow = fs.readFileSync(
 );
 const windowsPackager = fs.readFileSync(
   path.join(root, "scripts", "package-windows.cjs"),
+  "utf8"
+);
+const windowsLocalVerifier = fs.readFileSync(
+  path.join(root, "scripts", "verify-windows-local-cleanup.cjs"),
   "utf8"
 );
 const macEntitlements = fs.readFileSync(
@@ -150,6 +155,26 @@ test("leads source selection with the recommended imazing archive", () => {
     /data-source="archive"[\s\S]*?<strong>\.imazingapp<\/strong>[\s\S]*?source-recommend-badge">推薦</
   );
   assert.doesNotMatch(html, /data-source="sqlite"/);
+});
+
+test("offers guarded macOS and Windows local LINE cleanup", () => {
+  assert.match(html, /id="local-cleanup-start"/);
+  assert.match(html, /id="local-cleanup-screen"[^>]*hidden/);
+  assert.match(html, /id="local-cleanup-items"/);
+  assert.match(html, /雲端/);
+  assert.match(preload, /localCleanupStatus\(\)/);
+  assert.match(preload, /scanLocalCleanup\(\)/);
+  assert.match(preload, /deleteLocalSelection\(token, itemIds\)/);
+  assert.match(main, /ensureLineClosed/);
+  assert.match(main, /"line-native:local-cleanup-scan"/);
+  assert.match(main, /"line-native:local-cleanup-delete"/);
+  assert.match(main, /shell\.trashItem/);
+  assert.match(renderer, /function openLocalCleanup\(/);
+  assert.match(renderer, /function deleteSelectedLocalItems\(/);
+  assert.match(localCleanup, /isRecognizedLineProcess/);
+  assert.match(localCleanup, /cloudDeletion:[\s\S]*?supported: false/);
+  assert.match(macPackager, /local-cleanup\.cjs/);
+  assert.match(windowsPackager, /"local-cleanup\.cjs"/);
 });
 
 test("keeps browse, cleanup, and advanced as mutually exclusive native views", () => {
@@ -385,6 +410,7 @@ test("requires confirmation before cancelling work or closing the app", () => {
   assert.match(main, /mainWindow\.on\("close"/);
   assert.match(main, /確認關閉 LINE Cheater/);
   assert.match(main, /buttons: \["繼續使用", "確認關閉"\]/);
+  assert.match(main, /closeConfirmed = true;\s*app\.quit\(\);/);
 });
 
 test("supports reversible category-wide actions with locked mutation progress", () => {
@@ -665,6 +691,13 @@ test("supports ad-hoc and Developer ID macOS signatures", () => {
   assert.match(macPackager, /Signature: ad hoc \(not notarized\)/);
 });
 
+test("refuses to mislabel mixed-architecture macOS packages", () => {
+  assert.match(macPackager, /assertSingleArchitecture/);
+  assert.match(macPackager, /"-archs", target/);
+  assert.match(macPackager, /Electron runtime/);
+  assert.match(macPackager, /Rust sidecar/);
+});
+
 test("uses only the Electron JIT entitlements needed for hardened runtime", () => {
   assert.match(macEntitlements, /com\.apple\.security\.cs\.allow-jit/);
   assert.match(macEntitlements, /com\.apple\.security\.cs\.allow-unsigned-executable-memory/);
@@ -747,11 +780,16 @@ test("provides a GitHub Actions Windows packaging workflow", () => {
   assert.match(workflow, /windows-2022/);
   assert.match(workflow, /npm run build:native:win/);
   assert.match(workflow, /node scripts\/package-windows\.cjs/);
+  assert.match(workflow, /node scripts\/verify-windows-local-cleanup\.cjs/);
   assert.match(workflow, /github\.event_name != 'workflow_run'/);
   assert.match(workflow, /actions\/upload-artifact@v6/);
   assert.match(workflow, /Windows-x64\.zip/);
   assert.match(workflow, /uses: \.\/\.github\/actions\/setup-build/);
   assert.match(workflow, /gh release upload/);
+  assert.match(windowsLocalVerifier, /fs\.copyFileSync\(process\.execPath, fixtureExecutable\)/);
+  assert.match(windowsLocalVerifier, /listLineProcesses\("win32"\)/);
+  assert.match(windowsLocalVerifier, /ensureLineClosed/);
+  assert.match(windowsLocalVerifier, /requestLineQuit\("win32"\)/);
 });
 
 test("prefers the current debug sidecar during development", () => {

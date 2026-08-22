@@ -1,0 +1,61 @@
+name: Verify Tauri desktop builds
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "native/core/**"
+      - "native/frontend/**"
+      - "native/tauri/**"
+      - ".github/workflows/tauri-desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            bundles: app,dmg
+            artifact: macos-arm64
+          - os: windows-2022
+            bundles: nsis
+            artifact: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: native/tauri/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+      - name: Install dependencies and run contract tests
+        run: |
+          npm ci
+          npm test
+        working-directory: native/tauri
+      - name: Run Rust tests, formatting, and Clippy
+        shell: bash
+        run: |
+          cargo fmt --all -- --check
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build Tauri installer
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+        working-directory: native/tauri
+      - uses: actions/upload-artifact@v6
+        with:
+          name: line-cheater-tauri-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/nsis/*.exe

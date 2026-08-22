@@ -1,3 +1,4 @@
+mod cancel;
 pub mod candidate;
 pub mod catalog;
 mod conversation;
@@ -7,6 +8,7 @@ pub mod performance;
 pub mod server;
 pub mod source;
 
+pub use cancel::CancellationToken;
 pub use candidate::{
     CandidateOptions, CandidateProgress, CandidateReport, build_candidate,
     build_candidate_with_options, line_square_rebuild_required,
@@ -27,7 +29,9 @@ pub use model::{
     Message, MessageAttachment, MessageCursor, MessagePage,
 };
 pub use performance::{PerformanceProfile, system_performance_profile};
-pub use server::{NativeSession, serve};
+pub use server::{
+    InProcessResponse, NativeSession, invoke, invoke_streaming, invoke_streaming_cancellable, serve,
+};
 pub use source::{
     PreparePhase, PrepareProgress, PreparedSource, SourceKind, SourceReport, inspect_source,
     prepare_source, prepare_source_reporting,

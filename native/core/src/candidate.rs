@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZIP64_BYTES_THR, ZipArchive, ZipWriter};
 
+use crate::cancel::check_cancelled;
 use crate::catalog::Catalog;
 use crate::catalog::DatabaseCleanupPlan;
 use crate::source::{PreparedSource, SourceKind, inspect_source, prepare_source};
@@ -207,6 +208,7 @@ pub fn build_candidate_with_options<F>(
 where
     F: FnMut(CandidateProgress) -> Result<()>,
 {
+    check_cancelled()?;
     let CandidateOptions {
         full_crc,
         link_duplicates,
@@ -272,6 +274,7 @@ where
     };
     match build_result {
         Ok(mut candidate) => {
+            check_cancelled()?;
             fs::rename(&temporary, output)?;
             candidate.source_path = source.display().to_string();
             candidate.output_path = output.display().to_string();
@@ -845,6 +848,7 @@ where
     let mut processed_bytes = 0_u64;
     let mut output_entries = 0_u64;
     for index in 0..archive.len() {
+        check_cancelled()?;
         let mut entry = archive.by_index(index)?;
         ensure_stable_archive_name(&entry)?;
         let name = entry.name().to_string();
@@ -1013,6 +1017,7 @@ where
     let mut skipped_sidecars_found = 0_u64;
 
     for entry in WalkDir::new(source).follow_links(false) {
+        check_cancelled()?;
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
@@ -1234,6 +1239,7 @@ fn inspect_archive_for_build(source: &Path) -> Result<ArchiveBuildInfo> {
     let mut protected_names = Vec::new();
     let mut total_bytes = 0_u64;
     for index in 0..archive.len() {
+        check_cancelled()?;
         let entry = archive.by_index(index)?;
         ensure_stable_archive_name(&entry)?;
         if entry.encrypted() {
@@ -1305,6 +1311,7 @@ fn verify_candidate(
     let mut names = HashSet::with_capacity(archive.len());
     let mut regular_names = HashSet::with_capacity(archive.len());
     for index in 0..archive.len() {
+        check_cancelled()?;
         let mut entry = archive.by_index(index)?;
         ensure_stable_archive_name(&entry)?;
         let name = entry.name().to_string();
@@ -1374,6 +1381,7 @@ fn verify_candidate(
 fn hash_directory_protected(root: &Path) -> Result<HashMap<String, String>> {
     let mut protected = HashMap::new();
     for entry in WalkDir::new(root).follow_links(false) {
+        check_cancelled()?;
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
@@ -1399,6 +1407,7 @@ fn hash_reader(mut reader: impl Read) -> Result<String> {
     let mut digest = Sha256::new();
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
     loop {
+        check_cancelled()?;
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -1413,6 +1422,7 @@ fn copy_and_hash(mut reader: impl Read, mut writer: impl Write) -> Result<(u64, 
     let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
     let mut copied = 0_u64;
     loop {
+        check_cancelled()?;
         let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -1432,6 +1442,7 @@ fn catalog_directory_work(
     let mut entries = 0_u64;
     let mut bytes = 0_u64;
     for entry in WalkDir::new(root).follow_links(false) {
+        check_cancelled()?;
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
