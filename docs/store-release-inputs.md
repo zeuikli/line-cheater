@@ -32,8 +32,9 @@ provisioning profile。要繼續上傳，需要：
 - iOS Simulator arm64 App 已建置、安裝與啟動驗證。
 - 不需要 Distribution 的 iPhoneOS arm64 Release IPA 已產出並驗證；可由 Xcode Personal
   Team 或 AltStore Classic 使用個人 Apple ID 簽署側載。詳見 `docs/ios-without-distribution.md`。
-- GitHub Actions 已包含 iOS Simulator、Android debug APK、macOS DMG 與 Windows NSIS
-  的建置工作；必須把目前變更提交到遠端分支後才能取得 Windows／Android 實跑結果。
+- GitHub Actions 已成功產出 iOS Simulator App、22,049,312-byte 的 arm64 Android Release
+  側載 APK、macOS DMG 與 5,036,699-byte 的 Windows NSIS。Android 測試包已由一次性 CI
+  身分簽署，並通過 APK Signature v2/v3 驗證；正式上架仍須換成擁有者保管的固定金鑰。
 - macOS arm64 DMG 已以 ad-hoc 簽署並通過 `codesign --strict` 與 `hdiutil verify`。
 - 手機版只讀取使用者在系統檔案選擇器明確選取的備份，不會也不能讀取 LINE 的私有
   App 容器。

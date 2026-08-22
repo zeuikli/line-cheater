@@ -13,9 +13,9 @@ by that application after five seconds.
 Toolchain: Tauri 2.11.5, Tauri CLI 2.11.4, Rust 1.98.0, Electron 37.2.6, Node 26.0.0.
 
 The Tauri result passes the pre-recorded gates of at least 50% smaller application size and 30%
-lower idle RSS. These measurements do not by themselves authorize removing the Electron fallback;
-Windows packaging, Android packaging, signed-device builds, and remaining shell commands must also
-pass their release gates.
+lower idle RSS. Windows NSIS, optimized arm64 Android APK, iOS Simulator, native shell commands,
+and regression matrices now also pass. Electron remains a rollback fallback while production code
+signing and physical-device smoke tests are completed; it is no longer the primary architecture.
 
 The final macOS DMG uses an explicit ad-hoc bundle signature and passed `hdiutil verify` plus strict,
 deep `codesign` verification. It is not notarized; a Developer ID identity and Apple notarization

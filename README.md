@@ -186,12 +186,17 @@ npm --prefix native/tauri run mobile:ios:device -- <DEVICE_IDENTIFIER>
 未簽署 IPA 的驗證、Xcode Personal Team 與個人側載步驟見
 [沒有 Apple Distribution 時的 iOS 使用方式](docs/ios-without-distribution.md)。
 
-Android 需先依 Tauri 文件安裝 Android SDK、NDK、Platform Tools 與四個 Rust Android targets：
+Android 需先依 Tauri 文件安裝 Android SDK、NDK、Platform Tools 與 arm64 Rust target。一般
+近代手機使用下列正式最佳化的 arm64 分包，避免把模擬器與舊 CPU 一起塞進 APK：
 
 ```bash
 npm --prefix native/tauri run mobile:android:init
-npm --prefix native/tauri run tauri android build -- --debug --apk
+npm --prefix native/tauri run tauri android build -- --apk --target aarch64 --split-per-abi
 ```
+
+Pull Request 的 `line-cheater-android-arm64-ci-signed` 成品會套用一次性測試簽章，可直接側載；
+它不是正式商店身分，不同次 CI 成品無法互相覆蓋更新，需先移除舊測試版。正式發佈必須改用
+專案擁有者保管的固定 Android 簽章金鑰。
 
 手機商店正式發佈仍需 Apple Developer／Google Play 帳號、簽署材料、商店資訊與上傳授權；目前的驗證狀態見 [手機發行狀態](docs/mobile-release-status.md)。
 
