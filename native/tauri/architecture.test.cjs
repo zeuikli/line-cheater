@@ -143,3 +143,11 @@ test("CI prepares the ignored Tauri frontend before workspace Rust compilation",
     assert.ok(buildUi < cargoTest, "the shared frontend must exist before cargo test compiles Tauri");
   }
 });
+
+test("Windows local cleanup uses only stable metadata identity APIs", () => {
+  const cleanup = read("src-tauri/src/local_cleanup.rs");
+  assert.doesNotMatch(cleanup, /\.volume_serial_number\(\)|\.file_index\(\)/);
+  assert.match(cleanup, /\.creation_time\(\)/);
+  assert.match(cleanup, /\.last_write_time\(\)/);
+  assert.match(cleanup, /\.file_attributes\(\)/);
+});

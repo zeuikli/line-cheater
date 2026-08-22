@@ -557,9 +557,11 @@ fn metadata_fingerprint(metadata: &fs::Metadata) -> Result<String, String> {
     let file_identity = {
         use std::os::windows::fs::MetadataExt;
         format!(
-            "{}:{}",
-            metadata.volume_serial_number().unwrap_or_default(),
-            metadata.file_index().unwrap_or_default()
+            "{}:{}:{}:{}",
+            metadata.creation_time(),
+            metadata.last_write_time(),
+            metadata.file_size(),
+            metadata.file_attributes()
         )
     };
     #[cfg(not(any(unix, windows)))]
