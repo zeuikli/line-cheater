@@ -51,13 +51,13 @@ function fileSourceFingerprint(sourcePath) {
 }
 
 function sessionUnavailableReason(session) {
-  if (!session.versionCompatible) return `Session 版本 ${session.cacheVersion || "未知"} 不相容`;
+  if (!session.versionCompatible) return `工作階段版本 ${session.cacheVersion || "未知"} 不相容`;
   if (!session.sourceExists) return "原始備份已移動或不存在";
   if (session.sourceCurrent === false) return "原始備份在分析後已變更";
   if (session.scanStatus !== "complete") return "附件掃描尚未完成";
   if (session.contextStatus !== "complete") return "SQLite 關聯分析尚未完成";
   if (session.contextIndexVersion !== CONTEXT_INDEX_VERSION) {
-    return "Session 分析格式需要更新";
+    return "工作階段分析格式需要更新";
   }
   return "";
 }

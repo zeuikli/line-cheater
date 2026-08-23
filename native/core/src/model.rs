@@ -59,6 +59,7 @@ pub struct Message {
     pub timestamp: i64,
     pub sender_pk: Option<i64>,
     pub sender_name: String,
+    pub avatar_url: String,
     pub is_self: bool,
     pub send_status: Option<i64>,
     pub content_type: Option<i64>,
