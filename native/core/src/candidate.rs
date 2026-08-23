@@ -517,6 +517,9 @@ fn rewrite_database(
             transaction.prepare("SELECT EXISTS(SELECT 1 FROM ZCHAT WHERE Z_PK = ?1)")?;
         let mut delete_messages = transaction.prepare("DELETE FROM ZMESSAGE WHERE ZCHAT = ?1")?;
         let mut delete_chat = transaction.prepare("DELETE FROM ZCHAT WHERE Z_PK = ?1")?;
+        let chat_related_tables = chat_related_tables(&transaction)?;
+        let thread_related_tables = thread_related_tables(&transaction)?;
+        let has_threads = table_has_column(&transaction, "ZTHREAD", "ZPARENTCHAT")?;
         for chat_pk in chat_pks {
             let exists: bool = chat_exists.query_row([chat_pk], |row| row.get(0))?;
             if !exists {
@@ -524,6 +527,26 @@ fn rewrite_database(
             }
             removed_messages =
                 removed_messages.saturating_add(delete_messages.execute([chat_pk])? as u64);
+            if has_threads {
+                for table in &thread_related_tables {
+                    transaction.execute(
+                        &format!(
+                            "DELETE FROM {} WHERE ZTHREAD IN (
+                                SELECT Z_PK FROM ZTHREAD WHERE ZPARENTCHAT = ?1
+                             )",
+                            quoted_identifier(table)
+                        ),
+                        [chat_pk],
+                    )?;
+                }
+                transaction.execute("DELETE FROM ZTHREAD WHERE ZPARENTCHAT = ?1", [chat_pk])?;
+            }
+            for table in &chat_related_tables {
+                transaction.execute(
+                    &format!("DELETE FROM {} WHERE ZCHAT = ?1", quoted_identifier(table)),
+                    [chat_pk],
+                )?;
+            }
             let deleted = delete_chat.execute([chat_pk])?;
             if deleted != 1 {
                 bail!("failed to remove planned chat from SQLite: {chat_pk}");
@@ -567,6 +590,68 @@ fn rewrite_database(
     }
     drop(destination_connection);
     Ok((removed_chats, removed_messages))
+}
+
+/// Returns every non-message table that references a chat through `ZCHAT`.
+///
+/// Core Data schemas vary by LINE version. Discovering the relationship avoids
+/// retaining chat metadata, member records, or read-state data from newer
+/// LineSquare schemas after their parent `ZCHAT` row is removed.
+fn chat_related_tables(transaction: &rusqlite::Transaction<'_>) -> Result<Vec<String>> {
+    tables_with_column(transaction, "ZCHAT", &["ZCHAT", "ZMESSAGE"])
+}
+
+/// Returns every table that references a thread through `ZTHREAD`.
+fn thread_related_tables(transaction: &rusqlite::Transaction<'_>) -> Result<Vec<String>> {
+    tables_with_column(transaction, "ZTHREAD", &["ZTHREAD"])
+}
+
+fn tables_with_column(
+    transaction: &rusqlite::Transaction<'_>,
+    column: &str,
+    excluded_tables: &[&str],
+) -> Result<Vec<String>> {
+    let mut statement = transaction.prepare(
+        "SELECT name
+         FROM sqlite_schema
+         WHERE type = 'table'
+           AND name NOT LIKE 'sqlite_%'
+         ORDER BY name",
+    )?;
+    let table_names = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut related = Vec::new();
+    for table in table_names {
+        if excluded_tables
+            .iter()
+            .any(|excluded| table.eq_ignore_ascii_case(excluded))
+        {
+            continue;
+        }
+        if table_has_column(transaction, &table, column)? {
+            related.push(table);
+        }
+    }
+    Ok(related)
+}
+
+fn table_has_column(
+    transaction: &rusqlite::Transaction<'_>,
+    table: &str,
+    column: &str,
+) -> Result<bool> {
+    if !table_exists(transaction, table)? {
+        return Ok(false);
+    }
+    let sql = format!("PRAGMA table_info({})", quoted_identifier(table));
+    let mut columns = transaction.prepare(&sql)?;
+    Ok(columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(column)))
 }
 
 fn rewrite_square_database(
