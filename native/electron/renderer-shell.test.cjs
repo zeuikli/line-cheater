@@ -708,6 +708,7 @@ test("supports ad-hoc and Developer ID macOS signatures", () => {
   assert.match(macPackager, /entitlements\.mac\.plist/);
   assert.match(macPackager, /codesign",\s*\["--verify", "--deep", "--strict"/);
   assert.match(macPackager, /hdiutil",\s*\[/);
+  assert.match(macPackager, /"-fs", "APFS"/);
   assert.match(macPackager, /SHA256SUMS\.txt/);
   assert.match(macPackager, /line-cheater\.icns/);
   assert.match(macPackager, /"assets", "icon\.png"/);
