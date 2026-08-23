@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,7 +13,7 @@ use crate::candidate::{
     CandidateOptions, build_candidate_with_options, line_square_rebuild_required,
 };
 use crate::catalog::{Catalog, ExportOptions, ExportScope};
-use crate::conversation::{write_html_end, write_html_start, write_message};
+use crate::conversation::{avatar_entry_name, write_html_end, write_html_start, write_message};
 use crate::database::{
     Fts5MessageIndex, LineDatabase, LineSquareDatabase, OrphanMessage, UnifiedGroupDatabase,
 };
@@ -27,6 +28,99 @@ use crate::source::{PreparedSource, SourceKind, prepare_source_reporting};
 
 pub const SIDECAR_PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_AVATAR_BYTES: u64 = 2 * 1024 * 1024;
+const AVATAR_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
+struct ExportAvatarCache {
+    agent: ureq::Agent,
+    entries: HashMap<String, Option<String>>,
+}
+
+impl ExportAvatarCache {
+    fn new() -> Self {
+        Self {
+            agent: ureq::AgentBuilder::new()
+                .timeout_connect(AVATAR_REQUEST_TIMEOUT)
+                .timeout_read(AVATAR_REQUEST_TIMEOUT)
+                .timeout_write(AVATAR_REQUEST_TIMEOUT)
+                .redirects(0)
+                .build(),
+            entries: HashMap::new(),
+        }
+    }
+
+    fn write_avatar<W: Write + Seek>(
+        &mut self,
+        archive: &mut ZipWriter<W>,
+        avatar_url: &str,
+    ) -> Result<Option<String>> {
+        if let Some(entry) = self.entries.get(avatar_url) {
+            return Ok(entry.clone());
+        }
+        let avatar = self.download(avatar_url);
+        let entry = if let Some((entry, bytes)) = avatar {
+            archive.start_file(
+                &entry,
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )?;
+            archive.write_all(&bytes)?;
+            Some(entry)
+        } else {
+            None
+        };
+        self.entries.insert(avatar_url.to_string(), entry.clone());
+        Ok(entry)
+    }
+
+    fn entry(&self, avatar_url: &str) -> Option<&str> {
+        self.entries
+            .get(avatar_url)
+            .and_then(|entry| entry.as_deref())
+    }
+
+    fn download(&self, avatar_url: &str) -> Option<(String, Vec<u8>)> {
+        if !is_supported_avatar_url(avatar_url) {
+            return None;
+        }
+        let response = self.agent.get(avatar_url).call().ok()?;
+        if response.status() != 200 {
+            return None;
+        }
+        let extension = avatar_extension(response.header("content-type")?)?;
+        let mut bytes = Vec::new();
+        response
+            .into_reader()
+            .take(MAX_AVATAR_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_AVATAR_BYTES {
+            return None;
+        }
+        Some((avatar_entry_name(avatar_url, extension), bytes))
+    }
+}
+
+fn is_supported_avatar_url(value: &str) -> bool {
+    value.starts_with("https://profile.line-scdn.net/")
+        || value.starts_with("https://obs.line-scdn.net/")
+}
+
+fn avatar_extension(content_type: &str) -> Option<&'static str> {
+    match content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/png" => Some("png"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
 
 pub struct NativeSession {
     prepared: PreparedSource,
@@ -298,6 +392,44 @@ impl NativeSession {
                 },
             )?;
 
+            let mut avatars = ExportAvatarCache::new();
+            write_conversation_progress(protocol_output, request, "下載頭像", progress)?;
+            let mut avatar_cursor = None;
+            let mut last_avatar_cursor = None;
+            loop {
+                let page = match params.source.as_str() {
+                    "line" => self.database.list_messages_for_account(
+                        params.chat_pk,
+                        avatar_cursor,
+                        1_000,
+                        self.prepared.account_id.as_deref(),
+                    )?,
+                    "square" => self
+                        .square_database
+                        .as_ref()
+                        .context("LineSquare.sqlite is not available")?
+                        .list_messages(
+                            params.chat_pk,
+                            avatar_cursor,
+                            1_000,
+                            self.prepared.account_id.as_deref(),
+                        )?,
+                    _ => unreachable!(),
+                };
+                for message in &page.items {
+                    avatars.write_avatar(&mut archive, &message.avatar_url)?;
+                }
+                let next_cursor = page.next_cursor;
+                if next_cursor.is_none() {
+                    break;
+                }
+                if next_cursor == last_avatar_cursor {
+                    anyhow::bail!("conversation avatar pagination did not advance");
+                }
+                last_avatar_cursor = next_cursor;
+                avatar_cursor = next_cursor;
+            }
+
             archive.start_file(
                 "index.html",
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
@@ -329,7 +461,7 @@ impl NativeSession {
                 self.catalog
                     .enrich_messages_with_attachments(&mut page.items)?;
                 for message in &page.items {
-                    write_message(&mut archive, message)?;
+                    write_message(&mut archive, message, avatars.entry(&message.avatar_url))?;
                 }
                 exported_messages = exported_messages.saturating_add(page.items.len() as u64);
                 progress.processed_messages = exported_messages;

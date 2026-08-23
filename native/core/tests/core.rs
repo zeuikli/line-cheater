@@ -82,7 +82,8 @@ fn make_fixture(root: &Path) -> PathBuf {
             CREATE TABLE ZUSER (
                 Z_PK INTEGER PRIMARY KEY,
                 ZMID TEXT,
-                ZNAME TEXT
+                ZNAME TEXT,
+                ZPICTUREURL TEXT
             );
             CREATE TABLE ZGROUP (
                 Z_PK INTEGER PRIMARY KEY,
@@ -102,8 +103,8 @@ fn make_fixture(root: &Path) -> PathBuf {
                 ZLATITUDE REAL,
                 ZLONGITUDE REAL
             );
-            INSERT INTO ZUSER VALUES (1, 'u1', 'Alice');
-            INSERT INTO ZUSER VALUES (2, 'test', 'Backup Owner');
+            INSERT INTO ZUSER VALUES (1, 'u1', 'Alice', '/alice-avatar');
+            INSERT INTO ZUSER VALUES (2, 'test', 'Backup Owner', '');
             INSERT INTO ZCHAT VALUES (7, 'u1', 0, 200, 'second');
             INSERT INTO ZMESSAGE VALUES (1, 'm1', 100, 7, 1, 1, 0, 'R', 'first', NULL, NULL);
             INSERT INTO ZMESSAGE VALUES (2, 'm2', 100, 7, 2, 1, 0, 'R', 'same time', NULL, NULL);
@@ -199,7 +200,8 @@ fn add_square_fixture(source: &Path) {
             CREATE TABLE ZSQUAREMEMBER (
                 Z_PK INTEGER PRIMARY KEY,
                 ZDISPLAYNAME TEXT,
-                ZMID TEXT
+                ZMID TEXT,
+                ZPROFILEIMAGEOBSHASH TEXT
             );
             CREATE TABLE ZMESSAGE (
                 Z_PK INTEGER PRIMARY KEY,
@@ -216,8 +218,8 @@ fn add_square_fixture(source: &Path) {
             );
             INSERT INTO ZSQUARE VALUES (3, 'Square A');
             INSERT INTO ZCHAT VALUES (8, 'square-chat', 0, 3, '');
-            INSERT INTO ZSQUAREMEMBER VALUES (11, 'Square Sender', 'square-user');
-            INSERT INTO ZSQUAREMEMBER VALUES (12, 'Backup Owner', 'test');
+            INSERT INTO ZSQUAREMEMBER VALUES (11, 'Square Sender', 'square-user', 'square-avatar');
+            INSERT INTO ZSQUAREMEMBER VALUES (12, 'Backup Owner', 'test', '');
             INSERT INTO ZMESSAGE VALUES
                 (12, '23456789', 400, 8, 11, 1, 1, 'R', 'square photo', NULL, NULL);
             INSERT INTO ZMESSAGE VALUES
@@ -572,8 +574,8 @@ fn pages_chats_and_messages_with_bounded_limits() {
     connection
         .execute_batch(
             "
-            INSERT INTO ZUSER VALUES (3, 'u2', 'Bob');
-            INSERT INTO ZUSER VALUES (4, 'u3', 'Carol');
+            INSERT INTO ZUSER VALUES (3, 'u2', 'Bob', '');
+            INSERT INTO ZUSER VALUES (4, 'u3', 'Carol', '');
             INSERT INTO ZCHAT VALUES (8, 'u2', 0, 400, 'third');
             INSERT INTO ZCHAT VALUES (9, 'u3', 0, 300, 'third');
             INSERT INTO ZMESSAGE VALUES (5, 'm5', 400, 8, 3, 1, 0, 'R', 'third', NULL, NULL);
@@ -695,6 +697,39 @@ fn pages_chats_and_messages_with_bounded_limits() {
             .search_messages(&"x".repeat(1_025), None, None, 10)
             .is_err()
     );
+}
+
+#[test]
+fn preserves_legacy_sticker_sender_and_identifier() {
+    let temporary = TempDir::new().unwrap();
+    let source = make_fixture(temporary.path());
+    let database_path = source.join(inspect_source(&source).unwrap().database_path);
+    let connection = Connection::open(&database_path).unwrap();
+    connection
+        .execute_batch(
+            "
+            INSERT INTO ZUSER VALUES (3, 'u3', 'Mock Sender', '');
+            INSERT INTO ZMESSAGE VALUES (5, '', 400, 7, 3, 0, 7, 'R', '', 0, 2131765);
+            ",
+        )
+        .unwrap();
+    connection.close().unwrap();
+
+    let prepared = prepare_source(&source, &temporary.path().join("work")).unwrap();
+    let database = LineDatabase::open(&prepared.database_path).unwrap();
+    let sticker = database
+        .list_messages_for_account(7, None, 10, prepared.account_id.as_deref())
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|message| message.pk == 5)
+        .unwrap();
+
+    assert_eq!(sticker.sender_name, "Mock Sender");
+    assert!(!sticker.is_self);
+    assert_eq!(sticker.content_type, Some(7));
+    assert_eq!(sticker.latitude, Some(0.0));
+    assert_eq!(sticker.longitude, Some(2131765.0));
 }
 
 #[test]
@@ -1836,7 +1871,7 @@ fn lists_chats_without_indexed_attachments_for_advanced_cleanup() {
     connection
         .execute_batch(
             "
-            INSERT INTO ZUSER VALUES (8, 'u-no-attachments', 'No attachments');
+            INSERT INTO ZUSER VALUES (8, 'u-no-attachments', 'No attachments', '');
             INSERT INTO ZCHAT VALUES (8, 'u-no-attachments', 0, 400, 'plain message');
             INSERT INTO ZMESSAGE VALUES
                 (8, 'm-no-attachments', 400, 8, 8, 0, 0, 'R', 'plain message', NULL, NULL);
@@ -2703,6 +2738,10 @@ fn sidecar_protocol_returns_bounded_pages_and_structured_errors() {
     );
     assert_eq!(response("2")["result"]["items"][0]["isSelf"], false);
     assert_eq!(response("2")["result"]["items"][1]["isSelf"], true);
+    assert_eq!(
+        response("2")["result"]["items"][0]["avatarUrl"],
+        "https://profile.line-scdn.net/alice-avatar"
+    );
     assert_eq!(response("3")["result"]["items"][0]["id"], "12345678");
     assert_eq!(response("4")["ok"], false);
     assert_eq!(response("4")["error"]["code"], "operation_failed");
@@ -2732,6 +2771,10 @@ fn sidecar_protocol_returns_bounded_pages_and_structured_errors() {
     assert_eq!(square_messages.len(), 2);
     assert_eq!(square_messages[0]["source"], "square");
     assert_eq!(square_messages[0]["isSelf"], false);
+    assert_eq!(
+        square_messages[0]["avatarUrl"],
+        "https://obs.line-scdn.net/square-avatar"
+    );
     assert_eq!(square_messages[1]["isSelf"], true);
     assert_eq!(response("12")["result"]["items"][0]["id"], "m3");
     assert_eq!(
@@ -2795,6 +2838,11 @@ fn sidecar_protocol_returns_bounded_pages_and_structured_errors() {
 fn exports_a_complete_offline_conversation_zip_from_first_message_to_last() {
     let temporary = TempDir::new().unwrap();
     let source = make_fixture(temporary.path());
+    let database_path = source.join(inspect_source(&source).unwrap().database_path);
+    Connection::open(database_path)
+        .unwrap()
+        .execute("UPDATE ZUSER SET ZPICTUREURL = ''", [])
+        .unwrap();
     add_many_text_messages(&source, 1_001);
     let work = temporary.path().join("conversation-work");
     let output_path = temporary.path().join("Alice-conversation.zip");

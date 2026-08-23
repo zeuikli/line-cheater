@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://stickershop.line-scdn.net https://profile.line-scdn.net https://obs.line-scdn.net; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
   <title>LINE Cheater</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
@@ -53,7 +53,7 @@
           <section class="saved-sessions" aria-labelledby="saved-sessions-title">
             <header class="saved-sessions-header">
               <div>
-                <h3 id="saved-sessions-title">已分析的 Session</h3>
+                <h3 id="saved-sessions-title">已分析的工作階段</h3>
                 <p>直接載入既有分析結果，不必重新掃描未變更的備份。</p>
               </div>
               <button id="refresh-sessions" class="secondary-button compact-button" type="button">
@@ -172,7 +172,6 @@
               <input id="advanced-mode" type="checkbox" role="switch">
               <span>進階模式</span>
             </label>
-            <p id="workspace-status" role="status">備份已以唯讀模式開啟。</p>
           </div>
         </header>
 
@@ -209,24 +208,30 @@
               </aside>
 
               <section class="panel messages-panel">
-                <div class="section-title compact message-heading">
-                  <div>
-                    <h3 id="selected-chat-title">選取聊天室</h3>
-                    <p id="selected-chat-meta" class="muted small">請從左側選取聊天室開始。</p>
+                <div class="message-toolbar">
+                  <div class="section-title compact message-heading">
+                    <div>
+                      <h3 id="selected-chat-title">選取聊天室</h3>
+                      <p id="selected-chat-meta" class="muted small">請從左側選取聊天室開始。</p>
+                    </div>
+                    <div class="message-pagination" aria-label="訊息分頁">
+                      <div class="message-pagination-group">
+                        <button id="previous-messages" type="button" aria-label="訊息上一頁" disabled>上一頁</button>
+                        <button id="next-messages" type="button" aria-label="訊息下一頁" disabled>下一頁</button>
+                      </div>
+                      <div class="message-pagination-group">
+                        <button id="export-chat-conversation" class="primary-button compact-button" type="button" disabled>輸出對話</button>
+                        <button id="export-chat-images" class="secondary-button compact-button" type="button" disabled>匯出圖檔</button>
+                        <button id="export-chat-attachments" class="secondary-button compact-button" type="button" disabled>匯出附件</button>
+                      </div>
+                    </div>
                   </div>
-                  <div class="message-pagination" aria-label="訊息分頁">
-                    <button id="previous-messages" type="button" aria-label="訊息上一頁" disabled>上一頁</button>
-                    <button id="next-messages" type="button" aria-label="訊息下一頁" disabled>下一頁</button>
-                    <button id="export-chat-conversation" class="primary-button compact-button" type="button" disabled>輸出對話</button>
-                    <button id="export-chat-images" class="secondary-button compact-button" type="button" disabled>匯出圖檔</button>
-                    <button id="export-chat-attachments" class="secondary-button compact-button" type="button" disabled>匯出附件</button>
-                  </div>
+                  <form id="search-form" class="search message-search">
+                    <input id="search-query" maxlength="1024" placeholder="搜尋目前聊天室的訊息文字">
+                    <button type="submit" disabled>搜尋</button>
+                    <button id="clear-search" type="button" disabled>清除</button>
+                  </form>
                 </div>
-                <form id="search-form" class="search message-search">
-                  <input id="search-query" maxlength="1024" placeholder="搜尋目前聊天室的訊息文字">
-                  <button type="submit" disabled>搜尋</button>
-                  <button id="clear-search" type="button" disabled>清除</button>
-                </form>
                 <div class="message-status-row">
                   <p id="message-status" class="message-status" role="status" aria-live="polite"></p>
                   <button id="retry-messages" class="retry-button hidden" type="button">重試</button>
@@ -240,6 +245,53 @@
 
           <section id="cleanup-view" class="workspace-view hidden" aria-labelledby="cleanup-heading-title">
             <div class="panel cleanup-panel">
+              <section id="cleanup-plan-page" class="cleanup-plan-page" aria-labelledby="cleanup-plan-page-title">
+                <div class="section-title cleanup-plan-page-heading">
+                  <div>
+                    <p class="section-kicker">STORAGE CLEANUP</p>
+                    <h2 id="cleanup-plan-page-title">選擇清理方案</h2>
+                    <p class="muted">先預演可安全處理的附件，再進入聊天室逐一審核。</p>
+                  </div>
+                </div>
+                <div class="cleanup-warning">
+                  <strong>還原前請保留原始檔</strong>
+                  <span>方案只會自動標記可確認的圖片原檔；SQLite 未引用與待複核附件仍需人工確認。</span>
+                </div>
+                <section id="cleanup-preflight" class="cleanup-preflight" aria-live="polite">
+                  <div class="cleanup-preflight-heading">
+                    <div>
+                      <strong id="cleanup-preflight-title">清理前盲點掃描</strong>
+                      <span id="cleanup-preflight-summary">正在檢查來源、索引與不確定檔案…</span>
+                    </div>
+                    <button id="refresh-cleanup-preflight" class="secondary-button" type="button" disabled>
+                      重新檢查
+                    </button>
+                  </div>
+                  <div id="cleanup-preflight-risks" class="cleanup-preflight-risks"></div>
+                </section>
+                <section id="cleanup-plan-previews" class="cleanup-plan-previews" aria-labelledby="cleanup-plan-previews-title">
+                  <div class="cleanup-plan-previews-heading">
+                    <div>
+                      <strong id="cleanup-plan-previews-title">清理方案預演</strong>
+                      <span id="cleanup-plan-previews-summary">
+                        請先選擇方案，確認後才會進入詳細清理。
+                      </span>
+                    </div>
+                  </div>
+                  <div id="cleanup-plan-cards" class="cleanup-plan-cards" role="radiogroup" aria-label="清理方案"></div>
+                </section>
+                <div class="cleanup-manual-entry">
+                  <div>
+                    <strong>想自行決定每個附件？</strong>
+                    <span>不套用方案，也不會自動標記檔案。</span>
+                  </div>
+                  <button id="enter-manual-cleanup" class="secondary-button" type="button">
+                    手動清理
+                  </button>
+                </div>
+              </section>
+
+              <section id="cleanup-detail-page" class="cleanup-detail-page hidden" aria-labelledby="cleanup-heading-title">
               <div class="section-title cleanup-heading">
                 <div>
                   <p class="section-kicker">STORAGE CLEANUP</p>
@@ -261,44 +313,17 @@
                 </div>
               </div>
               <div class="cleanup-controls">
-                <div class="cleanup-warning">
-                  <strong>還原前請保留原始檔</strong>
-                  <span>「SQLite 未引用」仍需人工確認；候選檔只會排除已標記附件，不會改動來源備份。</span>
-                </div>
-                <section id="cleanup-preflight" class="cleanup-preflight" aria-live="polite">
-                  <div class="cleanup-preflight-heading">
-                    <div>
-                      <strong id="cleanup-preflight-title">清理前盲點掃描</strong>
-                      <span id="cleanup-preflight-summary">正在檢查來源、索引與不確定檔案…</span>
-                    </div>
-                    <button id="refresh-cleanup-preflight" class="secondary-button" type="button" disabled>
-                      重新檢查
-                    </button>
-                  </div>
-                  <div id="cleanup-preflight-risks" class="cleanup-preflight-risks"></div>
-                </section>
-                <section id="cleanup-plan-previews" class="cleanup-plan-previews" aria-labelledby="cleanup-plan-previews-title">
-                  <div class="cleanup-plan-previews-heading">
-                    <div>
-                      <strong id="cleanup-plan-previews-title">清理方案預演</strong>
-                      <span id="cleanup-plan-previews-summary">
-                        請選擇方案；選取只會切換檢視範圍，不會立即標記或刪除檔案。
-                      </span>
-                    </div>
-                    <button id="toggle-cleanup-plan-previews" class="secondary-button" type="button" disabled>
-                      選擇方案
-                    </button>
-                  </div>
-                  <div id="cleanup-plan-cards" class="cleanup-plan-cards" role="radiogroup" aria-label="清理方案"></div>
-                </section>
                 <div class="cleanup-plan-bar" aria-live="polite">
                   <div>
-                    <strong>清理模式</strong>
+                    <strong id="cleanup-current-plan">目前方案</strong>
                     <span id="cleanup-automation-summary">
                       安全自動清理只會標記已確認的圖片原檔，並保留非空縮圖。
                     </span>
                   </div>
                   <div class="cleanup-plan-actions">
+                    <button id="change-cleanup-plan" class="secondary-button" type="button">
+                      變更方案
+                    </button>
                     <button id="plan-safe-attachment-cleanup" class="secondary-button" type="button" disabled>
                       自動標記安全瘦身
                     </button>
@@ -388,6 +413,7 @@
                   建立瘦身 .imazingapp
                 </button>
               </div>
+              </section>
             </div>
           </section>
 

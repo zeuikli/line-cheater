@@ -329,6 +329,7 @@ run("/usr/bin/hdiutil", [
   "-srcfolder", dmgStage,
   "-ov",
   "-format", "UDZO",
+  "-fs", "APFS",
   dmgPath
 ]);
 fs.rmSync(dmgStage, { recursive: true, force: true });

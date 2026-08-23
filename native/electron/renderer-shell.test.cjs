@@ -214,7 +214,7 @@ test("versions session cache and asks whether to retain it after a successful ca
   assert.match(main, /outputFallsInsideSession\(workDir, output\)/);
   assert.match(main, /"line-native:finalize-candidate-session"/);
   assert.match(main, /closeCompletedSession\(client, workDir, retainSession\)/);
-  assert.match(renderer, /要刪除已分析的 Session 嗎/);
+  assert.match(renderer, /要刪除已分析的工作階段嗎/);
   assert.match(renderer, /bridge\.finalizeCandidateSession\(!deleteSession\)/);
   assert.match(renderer, /report\.cacheRetained/);
   assert.match(renderer, /function resetAfterCandidateBuild\(\)/);
@@ -225,7 +225,7 @@ test("versions session cache and asks whether to retain it after a successful ca
 });
 
 test("lists and directly opens complete analyzed sessions", () => {
-  assert.match(html, /id="saved-sessions-title">已分析的 Session/);
+  assert.match(html, /id="saved-sessions-title">已分析的工作階段/);
   assert.match(html, /id="saved-session-list"/);
   assert.match(html, /id="refresh-sessions"/);
   assert.match(preload, /listSessions\(\)/);
@@ -243,11 +243,12 @@ test("lists and directly opens complete analyzed sessions", () => {
   assert.match(sessionCache, /sessionPath: workDir/);
   assert.match(renderer, /function renderSavedSessions\(sessions\)/);
   assert.match(renderer, /`備份：\$\{session\.sourcePath\}`/);
-  assert.match(renderer, /`Session：\$\{session\.sessionPath\}`/);
+  assert.match(renderer, /`工作階段：\$\{session\.sessionPath\}`/);
   assert.match(renderer, /bridge\.openSession\(sessionId\)/);
   assert.match(renderer, /bridge\.deleteSession\(button\.dataset\.sessionDelete\)/);
   assert.match(renderer, /原始 LINE\.imazingapp、已生成的瘦身 \.imazingapp/);
-  assert.match(renderer, /既有 Session 已載入，不需要重新分析備份/);
+  assert.doesNotMatch(html, /id="workspace-status"/);
+  assert.match(renderer, /\[elements\.status, elements\.workspaceStatus\]\.filter\(Boolean\)/);
   assert.match(renderer, /\["來源路徑", info\.source\.sourcePath\]/);
   assert.match(styles, /\.saved-session-list\s*\{/);
 });
@@ -285,11 +286,40 @@ test("keeps community chats source-aware and trusts native sender ownership", ()
   );
 });
 
+test("renders legacy sticker coordinates as sent stickers", () => {
+  assert.match(renderer, /function legacyStickerId\(message\)/);
+  assert.match(renderer, /Number\(message\.contentType\) !== 7/);
+  assert.match(renderer, /function lineStickerUrl\(stickerId\)/);
+  assert.match(
+    renderer,
+    /stickershop\.line-scdn\.net\/stickershop\/v1\/sticker\/\$\{stickerId\}\/iPhone\/sticker_animation@2x\.png/
+  );
+  assert.match(renderer, /!stickerId && Number\.isFinite\(message\.latitude\)/);
+  assert.match(html, /img-src 'self' data: https:\/\/stickershop\.line-scdn\.net https:\/\/profile\.line-scdn\.net https:\/\/obs\.line-scdn\.net/);
+  assert.match(styles, /\.message-sticker\s*\{/);
+});
+
+test("renders LINE CDN sender avatars with a local fallback", () => {
+  assert.match(renderer, /function messageAvatar\(message\)/);
+  assert.match(renderer, /function lineAvatarUrl\(value\)/);
+  assert.match(renderer, /\["profile\.line-scdn\.net", "obs\.line-scdn\.net"\]/);
+  assert.match(renderer, /image\.referrerPolicy = "no-referrer"/);
+  assert.match(styles, /\.message-avatar\s*\{/);
+});
+
 test("keeps chat and message browsing bidirectionally paginated", () => {
   assert.match(html, /id="previous-chats"/);
   assert.match(html, /id="next-chats"/);
   assert.match(html, /id="previous-messages"/);
   assert.match(html, /id="next-messages"/);
+  assert.match(
+    html,
+    /message-pagination-group[\s\S]*?id="previous-messages"[\s\S]*?id="next-messages"[\s\S]*?<\/div>[\s\S]*?message-pagination-group[\s\S]*?id="export-chat-conversation"/
+  );
+  assert.match(
+    html,
+    /class="message-toolbar"[\s\S]*?class="section-title compact message-heading"[\s\S]*?<\/div>\s*<form id="search-form"/
+  );
   assert.match(renderer, /beforeCursor/);
   assert.match(renderer, /loadChats\("previous"\)/);
   assert.match(renderer, /loadMessages\("previous"\)/);
@@ -297,12 +327,17 @@ test("keeps chat and message browsing bidirectionally paginated", () => {
   assert.match(renderer, /elements\.previousMessages\.disabled = !page\.hasPrevious/);
   assert.match(renderer, /currentProvider !== provider/);
   assert.match(renderer, /requestedSelectionGeneration !== selectedChatGeneration/);
+  assert.match(renderer, /function chatListStatusText\(totalChats, page\)/);
+  assert.match(renderer, /void loadAllChats\(\)\.then/);
+  assert.match(renderer, /chatListStatusText\(all\.length, page\)/);
   assert.match(renderer, /setRetryVisible\(elements\.retryMessages, true\)/);
   assert.match(renderer, /setRetryVisible\(elements\.retryChats, true\)/);
   assert.match(html, /id="retry-chats"/);
   assert.match(html, /id="retry-messages"/);
   assert.match(html, /id="clear-search"/);
   assert.match(styles, /\.message-pagination\s*\{/);
+  assert.match(styles, /\.message-pagination-group\s*\{/);
+  assert.match(styles, /\.message-toolbar\s*\{[^}]*gap: 18px/);
   assert.match(styles, /\.panel-status-row, \.message-status-row/);
 });
 
@@ -335,10 +370,11 @@ test("keeps cleanup bounded while presenting a continuous month-sectioned album"
   assert.match(styles, /\.workspace-content\s*\{[^}]*overflow: hidden/);
   assert.match(styles, /\.cleanup-panel\s*\{[^}]*height: 100%[^}]*overflow-x: hidden[^}]*overflow-y: auto/);
   assert.match(styles, /\.cleanup-panel\s*\{[^}]*overflow-x: hidden[^}]*overflow-y: auto/);
-  assert.match(styles, /\.cleanup-results\s*\{[^}]*min-height: 320px[^}]*flex: 0 0 320px/);
+  assert.match(renderer, /pageSize: overrides\.pageSize \|\| 6/);
+  assert.match(styles, /\.cleanup-results\s*\{[^}]*min-height: 440px[^}]*flex: 1 1 440px/);
   assert.match(styles, /\.cleanup-list\s*\{[^}]*overflow-x: hidden[^}]*overflow-y: auto/);
-  assert.match(styles, /\.cleanup-group-list\s*\{[^}]*grid-template-rows: repeat\(4,/);
-  assert.match(styles, /\.cleanup-group-list\s*\{[^}]*min-height: 306px/);
+  assert.match(styles, /\.cleanup-group-list\s*\{[^}]*grid-template-rows: repeat\(6,/);
+  assert.match(styles, /\.cleanup-group-list\s*\{[^}]*min-height: 426px/);
   assert.match(styles, /\.cleanup-review-grid\s*\{[^}]*repeat\(auto-fill, minmax\(min\(180px,/);
   assert.match(styles, /\.cleanup-month-header\s*\{[^}]*position: sticky/);
   assert.match(styles, /\.cleanup-preview img\s*\{[^}]*object-fit: contain/);
@@ -482,18 +518,26 @@ test("restarts the cleanup overview after global attachment-plan changes", () =>
 });
 
 test("surfaces cleanup blindspot scans, plan previews, and candidate verification", () => {
+  assert.match(html, /id="cleanup-plan-page" class="cleanup-plan-page"/);
+  assert.match(html, /id="cleanup-detail-page" class="cleanup-detail-page hidden"/);
   assert.match(html, /id="cleanup-preflight"/);
   assert.match(html, /id="refresh-cleanup-preflight"/);
   assert.match(html, /id="cleanup-plan-cards"/);
-  assert.match(html, /請選擇方案；選取只會切換檢視範圍/);
+  assert.match(html, /請先選擇方案，確認後才會進入詳細清理/);
+  assert.match(html, /id="enter-manual-cleanup"/);
+  assert.match(html, /id="enter-manual-cleanup"[\s\S]*?手動清理/);
   assert.match(html, /id="package-modal-report"/);
   assert.match(renderer, /provider\.cleanupPreflight\(\)/);
   assert.match(renderer, /provider\.cleanupPlanPreviews\(\)/);
   assert.match(renderer, /function renderCleanupPreflight\(\)/);
   assert.match(renderer, /function renderCleanupPlanPreviews\(\)/);
   assert.match(renderer, /async function selectCleanupPlan\(profile\)/);
-  assert.match(renderer, /cleanupPlanPreviewsCollapsed = true/);
-  assert.match(renderer, /function toggleCleanupPlanPreviews\(\)/);
+  assert.match(renderer, /let cleanupPageMode = "plan";/);
+  assert.match(renderer, /function setCleanupPageMode\(mode, options = \{\}\)/);
+  assert.match(renderer, /setCleanupPageMode\("detail"\);/);
+  assert.match(renderer, /function enterManualCleanup\(\)/);
+  assert.match(renderer, /cleanupState\.manualMode = true;/);
+  assert.match(renderer, /已進入手動清理，不會自動標記檔案。/);
   assert.match(renderer, /title: `套用\$\{selectedProfile\.label\}？`/);
   assert.match(renderer, /confirmLabel: "套用方案"/);
   assert.match(renderer, /await applySafeAttachmentCleanup\(/);
@@ -507,8 +551,15 @@ test("surfaces cleanup blindspot scans, plan previews, and candidate verificatio
   assert.match(renderer, /cleanupState\.category = selectedProfile\.category/);
   assert.match(renderer, /已套用\$\{selectedProfile\.label\}/);
   assert.match(html, /role="radiogroup" aria-label="清理方案"/);
-  assert.match(html, /id="toggle-cleanup-plan-previews"/);
-  assert.match(styles, /\.cleanup-plan-previews\.is-collapsed \.cleanup-plan-cards/);
+  assert.match(html, /id="change-cleanup-plan"/);
+  assert.match(renderer, /async function changeCleanupPlan\(\)/);
+  assert.match(renderer, /provider\.clearAllRemovalPlans\(\)/);
+  assert.match(renderer, /附件、聊天室與進階清理的全部計畫/);
+  assert.match(renderer, /cleanupState\.planProfile = null;/);
+  assert.match(renderer, /setCleanupPageMode\("plan"\);/);
+  assert.match(styles, /\.cleanup-plan-page\s*\{/);
+  assert.match(styles, /\.cleanup-manual-entry\s*\{/);
+  assert.match(styles, /\.cleanup-detail-page\s*\{/);
   assert.match(renderer, /function renderCandidateReport\(report\)/);
   assert.match(renderer, /Number\(cleanupPreflight\.blockerCount\)/);
   assert.match(main, /"cleanupPreflight"/);
@@ -657,6 +708,7 @@ test("supports ad-hoc and Developer ID macOS signatures", () => {
   assert.match(macPackager, /entitlements\.mac\.plist/);
   assert.match(macPackager, /codesign",\s*\["--verify", "--deep", "--strict"/);
   assert.match(macPackager, /hdiutil",\s*\[/);
+  assert.match(macPackager, /"-fs", "APFS"/);
   assert.match(macPackager, /SHA256SUMS\.txt/);
   assert.match(macPackager, /line-cheater\.icns/);
   assert.match(macPackager, /"assets", "icon\.png"/);

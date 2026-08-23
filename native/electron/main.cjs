@@ -351,11 +351,11 @@ async function registerIpc() {
         SESSION_CACHE_COMPATIBLE_VERSIONS
       );
     } catch {
-      throw new Error("無法讀取這個 Session；catalog.sqlite 可能已損壞或不完整。");
+      throw new Error("無法讀取這個工作階段；catalog.sqlite 可能已損壞或不完整。");
     }
-    if (!savedSession) throw new Error("找不到指定的 Session。");
+    if (!savedSession) throw new Error("找不到指定的工作階段。");
     if (!savedSession.reusable) {
-      throw new Error(`無法直接載入這個 Session：${savedSession.unavailableReason}。`);
+      throw new Error(`無法直接載入這個工作階段：${savedSession.unavailableReason}。`);
     }
     return replaceSidecar(savedSession.sourcePath, true);
   });
@@ -374,9 +374,9 @@ async function registerIpc() {
         SESSION_CACHE_COMPATIBLE_VERSIONS
       );
     } catch {
-      throw new Error("無法讀取這個 Session；catalog.sqlite 可能已損壞或不完整。");
+      throw new Error("無法讀取這個工作階段；catalog.sqlite 可能已損壞或不完整。");
     }
-    if (!savedSession) throw new Error("找不到指定的 Session。");
+    if (!savedSession) throw new Error("找不到指定的工作階段。");
     const workDir = savedSession.sessionPath;
     const activeWorkDir = activeSource
       ? sessionWorkDir(app.getPath("userData"), activeSource)
@@ -385,7 +385,7 @@ async function registerIpc() {
       path.resolve(activeWorkDir) === path.resolve(workDir);
     if (deletingActiveSession) {
       if (activeOperation) {
-        throw new Error("此 Session 目前仍有操作正在執行，請等待完成後再刪除。");
+        throw new Error("此工作階段目前仍有操作正在執行，請等待完成後再刪除。");
       }
       const result = await closeCompletedSession(sidecar, workDir, false);
       return {
@@ -487,17 +487,17 @@ async function registerIpc() {
       throw new TypeError("A Session retention choice is required.");
     }
     if (!sidecar || !activeSource || !pendingCandidateFinalization) {
-      throw new Error("目前沒有等待處理的分析 Session。");
+      throw new Error("目前沒有等待處理的分析工作階段。");
     }
     if (activeOperation) {
-      throw new Error("候選檔仍在建立中，尚不能處理分析 Session。");
+      throw new Error("候選檔仍在建立中，尚不能處理分析工作階段。");
     }
     const { client, workDir } = pendingCandidateFinalization;
     if (sidecar !== client ||
         path.resolve(workDir) !== path.resolve(
           sessionWorkDir(app.getPath("userData"), activeSource)
         )) {
-      throw new Error("等待處理的分析 Session 已變更，將保留目前的快取。");
+      throw new Error("等待處理的分析工作階段已變更，將保留目前的快取。");
     }
     return closeCompletedSession(client, workDir, retainSession);
   });
@@ -661,9 +661,9 @@ function createWindow() {
     : path.join(__dirname, "assets", "icon.png");
   mainWindow = new BrowserWindow({
     title: "LINE Cheater",
-    width: 1180,
+    width: 1300,
     height: 960,
-    minWidth: 840,
+    minWidth: 1300,
     minHeight: 620,
     icon: windowIcon,
     show: false,

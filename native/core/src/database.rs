@@ -949,6 +949,11 @@ impl LineDatabase {
         } else {
             "''".to_string()
         };
+        let avatar_url = if can_join_user {
+            text_expr("u", &self.user_columns, &["ZPICTUREURL"])
+        } else {
+            "''".to_string()
+        };
         let join = if can_join_user {
             " LEFT JOIN ZUSER u ON u.Z_PK = m.ZSENDER"
         } else {
@@ -957,7 +962,7 @@ impl LineDatabase {
         let sql = format!(
             "SELECT CAST(m.Z_PK AS INTEGER), {message_id}, CAST(m.ZCHAT AS INTEGER), \
              {timestamp}, {sender_pk}, {sender_name}, {sender_id}, {send_status}, {content_type}, \
-             {message_type}, {text}, {latitude}, {longitude} \
+             {message_type}, {text}, {latitude}, {longitude}, {avatar_url} \
              FROM ZMESSAGE m{join} \
              WHERE m.ZCHAT = ?1 AND ({timestamp} {} ?2 OR ({timestamp} = ?2 AND m.Z_PK {} ?3)) \
              ORDER BY {timestamp} {}, m.Z_PK {} LIMIT ?4",
@@ -1112,6 +1117,11 @@ impl LineDatabase {
         } else {
             "''".to_string()
         };
+        let avatar_url = if can_join_user {
+            text_expr("u", &self.user_columns, &["ZPICTUREURL"])
+        } else {
+            "''".to_string()
+        };
         let join = if can_join_user {
             " LEFT JOIN ZUSER u ON u.Z_PK = m.ZSENDER"
         } else {
@@ -1120,7 +1130,7 @@ impl LineDatabase {
         let sql = format!(
             "SELECT CAST(m.Z_PK AS INTEGER), {message_id}, CAST(m.ZCHAT AS INTEGER), \
              {timestamp}, {sender_pk}, {sender_name}, {sender_id}, {send_status}, {content_type}, \
-             {message_type}, {text}, {latitude}, {longitude} \
+             {message_type}, {text}, {latitude}, {longitude}, {avatar_url} \
              FROM ZMESSAGE m{join} \
              WHERE {text} LIKE ?1 ESCAPE '\\' \
                AND (?2 IS NULL OR m.ZCHAT = ?2) \
@@ -1949,6 +1959,11 @@ impl LineSquareDatabase {
         } else {
             "''".to_string()
         };
+        let avatar_url = if can_join_sender {
+            text_expr("sm", &self.member_columns, &["ZPROFILEIMAGEOBSHASH"])
+        } else {
+            "''".to_string()
+        };
         let join = if can_join_sender {
             " LEFT JOIN ZSQUAREMEMBER sm ON sm.Z_PK = m.ZSENDER"
         } else {
@@ -1957,7 +1972,7 @@ impl LineSquareDatabase {
         let sql = format!(
             "SELECT CAST(m.Z_PK AS INTEGER), {message_id}, CAST(m.ZCHAT AS INTEGER), \
              {timestamp}, {sender_pk}, {sender_name}, {sender_id}, {send_status}, {content_type}, \
-             {message_type}, {text}, {latitude}, {longitude} \
+             {message_type}, {text}, {latitude}, {longitude}, {avatar_url} \
              FROM ZMESSAGE m{join} \
              WHERE m.ZCHAT = ?1 AND ({timestamp} {} ?2 OR ({timestamp} = ?2 AND m.Z_PK {} ?3)) \
              ORDER BY {timestamp} {}, m.Z_PK {} LIMIT ?4",
@@ -2076,6 +2091,11 @@ impl LineSquareDatabase {
         } else {
             "''".to_string()
         };
+        let avatar_url = if can_join_sender {
+            text_expr("sm", &self.member_columns, &["ZPROFILEIMAGEOBSHASH"])
+        } else {
+            "''".to_string()
+        };
         let join = if can_join_sender {
             " LEFT JOIN ZSQUAREMEMBER sm ON sm.Z_PK = m.ZSENDER"
         } else {
@@ -2084,7 +2104,7 @@ impl LineSquareDatabase {
         let sql = format!(
             "SELECT CAST(m.Z_PK AS INTEGER), {message_id}, CAST(m.ZCHAT AS INTEGER), \
              {timestamp}, {sender_pk}, {sender_name}, {sender_id}, {send_status}, {content_type}, \
-             {message_type}, {text}, {latitude}, {longitude} \
+             {message_type}, {text}, {latitude}, {longitude}, {avatar_url} \
              FROM ZMESSAGE m{join} \
              WHERE {text} LIKE ?1 ESCAPE '\\' \
                AND (?2 IS NULL OR m.ZCHAT = ?2) \
@@ -2368,8 +2388,13 @@ fn message_from_row(
     let send_status: Option<i64> = row.get(7)?;
     let content_type: Option<i64> = row.get(8)?;
     let message_type: String = row.get(9)?;
-    let is_system = content_type.is_some_and(|value| [7, 18, 96, 111].contains(&value))
-        || (sender_pk.is_none() && send_status == Some(0) && id.is_empty());
+    let latitude: Option<f64> = row.get(11)?;
+    let longitude: Option<f64> = row.get(12)?;
+    let avatar_url: String = row.get(13)?;
+    let is_sticker = is_legacy_sticker(content_type, latitude, longitude);
+    let is_system = !is_sticker
+        && (content_type.is_some_and(|value| [7, 18, 96, 111].contains(&value))
+            || (sender_pk.is_none() && send_status == Some(0) && id.is_empty()));
     let is_self = account_id.is_some_and(|account| !sender_id.is_empty() && sender_id == account)
         || (sender_pk.is_none()
             && !is_system
@@ -2382,13 +2407,14 @@ fn message_from_row(
         timestamp: row.get(3)?,
         sender_pk,
         sender_name,
+        avatar_url: normalized_avatar_url(source, &avatar_url),
         is_self,
         send_status,
         content_type,
         message_type,
         text: row.get(10)?,
-        latitude: row.get(11)?,
-        longitude: row.get(12)?,
+        latitude,
+        longitude,
         attachments: Vec::new(),
     })
 }
@@ -2405,8 +2431,12 @@ fn message_from_fts_row(
     let send_status: Option<i64> = row.get(7)?;
     let content_type: Option<i64> = row.get(8)?;
     let message_type: String = row.get(9)?;
-    let is_system = content_type.is_some_and(|value| [7, 18, 96, 111].contains(&value))
-        || (sender_pk.is_none() && send_status == Some(0) && id.is_empty());
+    let latitude: Option<f64> = row.get(11)?;
+    let longitude: Option<f64> = row.get(12)?;
+    let is_sticker = is_legacy_sticker(content_type, latitude, longitude);
+    let is_system = !is_sticker
+        && (content_type.is_some_and(|value| [7, 18, 96, 111].contains(&value))
+            || (sender_pk.is_none() && send_status == Some(0) && id.is_empty()));
     let is_self = account_id.is_some_and(|account| !sender_id.is_empty() && sender_id == account)
         || (sender_pk.is_none()
             && !is_system
@@ -2419,13 +2449,14 @@ fn message_from_fts_row(
         timestamp: row.get(3)?,
         sender_pk,
         sender_name,
+        avatar_url: String::new(),
         is_self,
         send_status,
         content_type,
         message_type,
         text: row.get(10)?,
-        latitude: row.get(11)?,
-        longitude: row.get(12)?,
+        latitude,
+        longitude,
         attachments: Vec::new(),
     })
 }
@@ -2495,6 +2526,31 @@ fn nullable_real_expr(alias: &str, columns: &HashSet<String>, column: &str) -> S
         format!("CAST({alias}.{column} AS REAL)")
     } else {
         "NULL".to_string()
+    }
+}
+
+fn normalized_avatar_url(source: &str, value: &str) -> String {
+    let value = value.trim();
+    match source {
+        "line"
+            if value.starts_with('/')
+                && value.len() <= 2_048
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"/._-~".contains(&byte)) =>
+        {
+            format!("https://profile.line-scdn.net{value}")
+        }
+        "square"
+            if !value.is_empty()
+                && value.len() <= 256
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte)) =>
+        {
+            format!("https://obs.line-scdn.net/{value}")
+        }
+        _ => String::new(),
     }
 }
 
@@ -2603,6 +2659,18 @@ fn extract_group_name_from_system_text(value: &str) -> String {
 
 fn lookup_id(value: &str) -> String {
     value.trim().to_lowercase()
+}
+
+fn is_legacy_sticker(
+    content_type: Option<i64>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+) -> bool {
+    content_type == Some(7)
+        && latitude == Some(0.0)
+        && longitude.is_some_and(|value| {
+            value.is_finite() && value > 0.0 && value.fract() == 0.0 && value <= i64::MAX as f64
+        })
 }
 
 fn chat_kind(chat_type: i64) -> &'static str {
