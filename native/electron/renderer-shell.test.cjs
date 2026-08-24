@@ -74,6 +74,17 @@ test("offers one macOS and one Windows download on the homepage", () => {
   assert.doesNotMatch(landingHtml, /id="macArm64Download"|id="macX64Download"/);
 });
 
+test("offers optional donation after a successful cleanup package", () => {
+  assert.match(landingHtml, /id="packageModalDonatePrompt"[^>]*hidden/);
+  assert.match(landingHtml, /id="packageModalDonate"[^>]*gumroad\.com\/l\/line-cheater/);
+  assert.match(landingHtml, /id="packageModalClose"[^>]*>完成/);
+  assert.match(landingScript, /packageModalDonatePrompt\.classList\.toggle\("hidden", isError\)/);
+  assert.match(html, /id="package-modal-donate-prompt"[^>]*hidden/);
+  assert.match(html, /id="package-modal-donate"[^>]*>抖內支持/);
+  assert.match(renderer, /packageModalDonatePrompt\.classList\.toggle\("hidden", error\)/);
+  assert.match(renderer, /bridge\.openExternal\("https:\/\/zeuik\.gumroad\.com\/l\/line-cheater"\)/);
+});
+
 test("defaults cleanup to chat attachment size", () => {
   assert.match(
     html,

@@ -696,8 +696,11 @@ progress { width: 100%; height: 8px; }
 .package-modal-progress-track { height: 10px; margin-top: 20px; overflow: hidden; border-radius: 999px; background: #e2e8f0; }
 .package-modal-progress { width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #2dd4bf); transition: width 180ms ease; }
 .package-modal-progress-label { margin: 8px 0 0; color: var(--accent-strong); font-size: 0.82rem; font-weight: 800; font-variant-numeric: tabular-nums; }
-.package-modal-cancel, .package-modal-close { min-width: 132px; margin-top: 22px; }
+.package-modal-cancel { min-width: 132px; margin-top: 22px; }
 .package-modal-cancel { margin-right: 8px; }
+.package-modal-donate-prompt { margin: 18px 0 -10px; color: var(--muted); font-size: 0.84rem; line-height: 1.5; }
+.package-modal-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+.package-modal-actions button { min-width: 132px; }
 .package-modal.is-success .package-modal-card { border-color: #86efac; }
 .package-modal.is-success .package-modal-state { color: #15803d; background: #dcfce7; }
 .package-modal.is-success .package-modal-spinner {

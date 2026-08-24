@@ -561,26 +561,23 @@ body.image-modal-open { overflow: hidden; }
   font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
-.package-modal-close {
-  min-width: 132px;
-  margin-top: 22px;
-}
-.donate-modal .package-modal-state { font-size: 1.6rem; }
-.donate-modal .package-modal-message { min-height: 0; }
-.donate-modal-actions {
+.package-modal-donate-prompt { margin: 18px 0 -10px; color: var(--muted); font-size: 0.84rem; line-height: 1.5; }
+.package-modal-actions, .donate-modal-actions {
   display: flex;
   gap: 10px;
   justify-content: center;
   flex-wrap: wrap;
   margin-top: 22px;
 }
-.donate-modal-actions .button {
+.package-modal-actions .button, .donate-modal-actions .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 132px;
   text-decoration: none;
 }
+.donate-modal .package-modal-state { font-size: 1.6rem; }
+.donate-modal .package-modal-message { min-height: 0; }
 .package-modal.is-success .package-modal-card { border-color: #86efac; }
 .package-modal.is-success .package-modal-state {
   color: #15803d;

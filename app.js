@@ -172,6 +172,8 @@
     el.packageModalMessage = document.getElementById("packageModalMessage");
     el.packageModalProgress = document.getElementById("packageModalProgress");
     el.packageModalProgressLabel = document.getElementById("packageModalProgressLabel");
+    el.packageModalDonatePrompt = document.getElementById("packageModalDonatePrompt");
+    el.packageModalActions = document.getElementById("packageModalActions");
     el.packageModalClose = document.getElementById("packageModalClose");
     el.donateModal = document.getElementById("donateModal");
     el.donateModalCard = el.donateModal && el.donateModal.querySelector(".package-modal-card");
@@ -2013,7 +2015,8 @@
     el.packageModalProgress.style.width = "0%";
     el.packageModalProgress.setAttribute("aria-valuenow", "0");
     el.packageModalProgressLabel.textContent = "0%";
-    el.packageModalClose.classList.add("hidden");
+    el.packageModalDonatePrompt.classList.add("hidden");
+    el.packageModalActions.classList.add("hidden");
     document.body.classList.add("package-modal-open");
     if (el.appShell) {
       el.appShell.inert = true;
@@ -2042,7 +2045,8 @@
     el.packageModalMessage.textContent = message;
     if (!isError) updatePackageModalProgress(100);
     el.packageModalClose.textContent = isError ? "關閉" : "完成";
-    el.packageModalClose.classList.remove("hidden");
+    el.packageModalDonatePrompt.classList.toggle("hidden", isError);
+    el.packageModalActions.classList.remove("hidden");
     el.packageModalClose.focus();
   }
 

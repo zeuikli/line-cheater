@@ -250,6 +250,9 @@ const elements = {
   packageModalProgress: document.querySelector("#package-modal-progress"),
   packageModalProgressLabel: document.querySelector("#package-modal-progress-label"),
   packageModalCancel: document.querySelector("#package-modal-cancel"),
+  packageModalDonatePrompt: document.querySelector("#package-modal-donate-prompt"),
+  packageModalActions: document.querySelector("#package-modal-actions"),
+  packageModalDonate: document.querySelector("#package-modal-donate"),
   packageModalClose: document.querySelector("#package-modal-close"),
   operationModal: document.querySelector("#operation-modal"),
   operationModalCard: document.querySelector("#operation-modal .package-modal-card"),
@@ -743,7 +746,8 @@ function showPackageModal(message) {
   elements.packageModalCancel.classList.remove("hidden");
   elements.packageModalCancel.disabled = false;
   elements.packageModalCancel.textContent = "取消建立";
-  elements.packageModalClose.classList.add("hidden");
+  elements.packageModalDonatePrompt.classList.add("hidden");
+  elements.packageModalActions.classList.add("hidden");
   renderCandidateReport(null);
   updatePackageModalProgress(0, message);
   setModalBusy(true, "package-modal-open");
@@ -812,7 +816,8 @@ function completePackageModal(error, title, message) {
   elements.packageModalCancel.classList.add("hidden");
   if (!error) updatePackageModalProgress(100);
   elements.packageModalClose.textContent = error ? "關閉" : "完成";
-  elements.packageModalClose.classList.remove("hidden");
+  elements.packageModalDonatePrompt.classList.toggle("hidden", error);
+  elements.packageModalActions.classList.remove("hidden");
   elements.packageModalClose.focus();
 }
 
@@ -5007,6 +5012,9 @@ elements.buildCandidate.addEventListener("click", () => void buildCandidate());
 elements.advancedBuildCandidate.addEventListener("click", () => void buildCandidate());
 elements.loadModalCancel.addEventListener("click", () => void cancelCurrentOperation("load"));
 elements.packageModalCancel.addEventListener("click", () => void cancelCurrentOperation("package"));
+elements.packageModalDonate.addEventListener("click", () => {
+  void bridge.openExternal("https://zeuik.gumroad.com/l/line-cheater").catch((error) => setStatus(error.message, true));
+});
 elements.operationModalCancel.addEventListener("click", () => {
   void cancelCurrentOperation(exportInProgress ? "export" : "cleanup");
 });
