@@ -2972,6 +2972,25 @@ fn advanced_cleanup_rewrites_candidate_sqlite_and_removes_chat_files_only() {
     connection
         .execute_batch(
             "
+            CREATE TABLE ZCHATMETADATA (
+                Z_PK INTEGER PRIMARY KEY,
+                ZCHAT INTEGER,
+                ZLASTREADIDDATA BLOB
+            );
+            CREATE TABLE ZCHATMEMBER (
+                Z_PK INTEGER PRIMARY KEY,
+                ZCHAT INTEGER,
+                ZMID TEXT
+            );
+            CREATE TABLE ZTHREAD (
+                Z_PK INTEGER PRIMARY KEY,
+                ZPARENTCHAT INTEGER,
+                ZREADUPTOMESSAGEID TEXT
+            );
+            CREATE TABLE ZTHREADROOTMESSAGE (
+                Z_PK INTEGER PRIMARY KEY,
+                ZTHREAD INTEGER
+            );
             INSERT INTO ZCHAT VALUES (9, 'empty-square', 0, 3, '');
             INSERT INTO ZCHAT VALUES (10, 'system-square', 0, 3, 'system');
             INSERT INTO ZMESSAGE VALUES
@@ -2979,6 +2998,22 @@ fn advanced_cleanup_rewrites_candidate_sqlite_and_removes_chat_files_only() {
                  'orphan message', NULL, NULL),
                 (15, 'square-system-event', 430, 10, 11, 1, 18, 'R',
                  'system event', NULL, NULL);
+            INSERT INTO ZCHATMETADATA VALUES
+                (1, 8, X'08'),
+                (2, 9, X'09'),
+                (3, 10, X'0A');
+            INSERT INTO ZCHATMEMBER VALUES
+                (1, 8, 'retained-member'),
+                (2, 9, 'deleted-member'),
+                (3, 10, 'deleted-system-member');
+            INSERT INTO ZTHREAD VALUES
+                (1, 8, 'retained-thread-read-position'),
+                (2, 9, 'deleted-thread-read-position'),
+                (3, 10, 'deleted-system-thread-read-position');
+            INSERT INTO ZTHREADROOTMESSAGE VALUES
+                (1, 1),
+                (2, 2),
+                (3, 3);
             ",
         )
         .unwrap();
@@ -3097,9 +3132,73 @@ fn advanced_cleanup_rewrites_candidate_sqlite_and_removes_chat_files_only() {
             row.get(0)
         })
         .unwrap();
+    let retained_read_metadata: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZCHATMETADATA WHERE ZCHAT = 8",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let removed_read_metadata: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZCHATMETADATA WHERE ZCHAT IN (9, 10)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let retained_chat_member: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZCHATMEMBER WHERE ZCHAT = 8",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let removed_chat_members: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZCHATMEMBER WHERE ZCHAT IN (9, 10)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let retained_thread: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZTHREAD WHERE ZPARENTCHAT = 8",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let removed_threads: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZTHREAD WHERE ZPARENTCHAT IN (9, 10)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let retained_thread_message: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZTHREADROOTMESSAGE WHERE ZTHREAD = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let removed_thread_messages: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM ZTHREADROOTMESSAGE WHERE ZTHREAD IN (2, 3)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(retained_chat, 1);
     assert_eq!(removed_square_chats, 0);
     assert_eq!(orphan, 0);
+    assert_eq!(retained_read_metadata, 1);
+    assert_eq!(removed_read_metadata, 0);
+    assert_eq!(retained_chat_member, 1);
+    assert_eq!(removed_chat_members, 0);
+    assert_eq!(retained_thread, 1);
+    assert_eq!(removed_threads, 0);
+    assert_eq!(retained_thread_message, 1);
+    assert_eq!(removed_thread_messages, 0);
     connection.close().unwrap();
 
     catalog.plan_automatic_cleanup(&filtered, &orphans).unwrap();
